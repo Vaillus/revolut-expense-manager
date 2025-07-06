@@ -43,40 +43,50 @@ def register_timeseries_callbacks(app):
         
         fig = go.Figure()
         
-        # Add exceptional expenses
-        if not exceptional.empty:
-            fig.add_trace(go.Scatter(
-                x=exceptional['month'],
-                y=exceptional['amount_abs'],
-                mode='lines+markers',
-                name='Exceptional',
-                line=dict(width=3, color='#FF6B6B'),
-                marker=dict(size=10),
-                hovertemplate='%{x}<br>Exceptional: %{y:.2f}€<extra></extra>'
-            ))
-        
-        # Add regular expenses
+        # Add regular expenses as base area (bottom)
         if not regular.empty:
             fig.add_trace(go.Scatter(
                 x=regular['month'],
                 y=regular['amount_abs'],
-                mode='lines+markers',
-                name='Regular',
-                line=dict(width=3, color='#4ECDC4'),
-                marker=dict(size=10),
+                fill='tozeroy',
+                mode='lines',
+                name='Regular Expenses',
+                line=dict(width=0, color='#4ECDC4'),
+                fillcolor='rgba(78, 205, 196, 0.7)',
                 hovertemplate='%{x}<br>Regular: %{y:.2f}€<extra></extra>'
             ))
         
-        # Add total line
-        if not monthly_totals.empty:
+        # Add exceptional expenses stacked on top
+        if not exceptional.empty and not regular.empty:
+            # Calculate stacked values (regular + exceptional)
+            stacked_values = []
+            for month in exceptional['month']:
+                regular_amount = regular[regular['month'] == month]['amount_abs'].iloc[0] if len(regular[regular['month'] == month]) > 0 else 0
+                exceptional_amount = exceptional[exceptional['month'] == month]['amount_abs'].iloc[0]
+                stacked_values.append(regular_amount + exceptional_amount)
+            
             fig.add_trace(go.Scatter(
-                x=monthly_totals['month'],
-                y=monthly_totals['amount_abs'],
-                mode='lines+markers',
-                name='Total',
-                line=dict(width=4, color='#45B7D1', dash='dash'),
-                marker=dict(size=12),
-                hovertemplate='%{x}<br>Total: %{y:.2f}€<extra></extra>'
+                x=exceptional['month'],
+                y=stacked_values,
+                fill='tonexty',
+                mode='lines',
+                name='Exceptional Expenses',
+                line=dict(width=0, color='#FF6B6B'),
+                fillcolor='rgba(255, 107, 107, 0.7)',
+                hovertemplate='%{x}<br>Exceptional: %{customdata:.2f}€<br>Total: %{y:.2f}€<extra></extra>',
+                customdata=exceptional['amount_abs']
+            ))
+        elif not exceptional.empty and regular.empty:
+            # Only exceptional expenses exist
+            fig.add_trace(go.Scatter(
+                x=exceptional['month'],
+                y=exceptional['amount_abs'],
+                fill='tozeroy',
+                mode='lines',
+                name='Exceptional Expenses',
+                line=dict(width=0, color='#FF6B6B'),
+                fillcolor='rgba(255, 107, 107, 0.7)',
+                hovertemplate='%{x}<br>Exceptional: %{y:.2f}€<extra></extra>'
             ))
         
         fig.update_layout(
