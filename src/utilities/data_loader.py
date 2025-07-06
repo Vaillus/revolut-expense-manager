@@ -280,8 +280,8 @@ def preprocess_raw_file(filename: str) -> tuple:
     df['Started Date'] = pd.to_datetime(df['Started Date']).dt.date
     df = df.rename(columns={'Started Date': 'Date'})
     
-    # Step 3: Sort by amount (ascending = negative amounts first)
-    df = df.sort_values(by='Amount', ascending=True)
+    # Step 3: Sort by date (chronological order) - more logical for tagging
+    df = df.sort_values(by='Date', ascending=True)
     
     # Step 4: Initialize tags column
     df["tags"] = [[] for _ in range(len(df))]
@@ -419,7 +419,7 @@ def get_suggested_tags_for_vendors(selected_vendors: List[str], tags: dict, vend
 
 
 def get_transaction_details_for_vendors(df: pd.DataFrame, selected_vendors: List[str]) -> Dict:
-    """Get transaction details for selected vendors"""
+    """Get transaction details for selected vendors - chronologically sorted"""
     if not selected_vendors:
         return {'transactions': [], 'summary': {}}
     
@@ -431,30 +431,41 @@ def get_transaction_details_for_vendors(df: pd.DataFrame, selected_vendors: List
     if len(transactions) == 0:
         return {'transactions': [], 'summary': {}}
     
-    # Group by vendor for summary
-    vendor_summary = {}
-    transactions_list = []
+    # Sort transactions chronologically (oldest first for better memory context)
+    # Convert Date to datetime for proper sorting, then sort by date AND amount as secondary key
+    transactions_with_datetime = transactions.copy()
+    transactions_with_datetime['Date'] = pd.to_datetime(transactions_with_datetime['Date'])
+    # Sort by date first (oldest first), then by amount (descending) as secondary sort
+    transactions_sorted = transactions_with_datetime.sort_values(['Date', 'amount_abs'], ascending=[True, False])
     
-    for vendor in selected_vendors:
-        vendor_transactions = transactions[transactions["Description"] == vendor]
-        if len(vendor_transactions) > 0:
-            vendor_total = vendor_transactions["amount_abs"].sum()
-            vendor_count = len(vendor_transactions)
+    # Create chronological transaction list with unique IDs
+    transactions_list = []
+    vendor_summary = {}
+    
+    for idx, (df_idx, trans) in enumerate(transactions_sorted.iterrows()):
+        vendor = trans["Description"]
+        transaction_info = {
+            'id': f"trans_{df_idx}",  # Unique ID based on DataFrame index
+            'df_index': df_idx,  # Original DataFrame index for targeting
+            'vendor': vendor,
+            'amount': trans["amount_abs"],
+            'date': str(trans["Date"]),
+            'description': trans["Description"],
+            'display_date': trans["Date"].strftime('%Y-%m-%d') if isinstance(trans["Date"], pd.Timestamp) else pd.to_datetime(trans["Date"]).strftime('%Y-%m-%d'),
+            'display_amount': f"{trans['amount_abs']:.2f}€"
+        }
+        transactions_list.append(transaction_info)
+        
+        # Build vendor summary
+        if vendor not in vendor_summary:
             vendor_summary[vendor] = {
-                'total': vendor_total,
-                'count': vendor_count,
+                'total': 0,
+                'count': 0,
                 'transactions': []
             }
-            
-            for _, trans in vendor_transactions.iterrows():
-                transaction_info = {
-                    'vendor': vendor,
-                    'amount': trans["amount_abs"],
-                    'date': str(trans["Date"]),
-                    'description': trans["Description"]
-                }
-                vendor_summary[vendor]['transactions'].append(transaction_info)
-                transactions_list.append(transaction_info)
+        vendor_summary[vendor]['total'] += trans["amount_abs"]
+        vendor_summary[vendor]['count'] += 1
+        vendor_summary[vendor]['transactions'].append(transaction_info)
     
     return {
         'transactions': transactions_list,
@@ -482,6 +493,102 @@ def apply_tags_to_vendors(df: pd.DataFrame, selected_vendors: List[str], selecte
     affected_count = mask.sum()
     
     return df, affected_count
+
+
+def apply_tags_to_transaction(df: pd.DataFrame, transaction_id: str, selected_tags: List[str], new_tags: List[str]) -> tuple:
+    """Apply tags to a specific transaction by its ID"""
+    if not transaction_id or (not selected_tags and not new_tags):
+        return df, 0
+    
+    # Extract df_index from transaction_id (format: "trans_123")
+    try:
+        df_index = int(transaction_id.split('_')[1])
+    except (ValueError, IndexError):
+        return df, 0
+    
+    # Check if the transaction exists and is untagged
+    if df_index not in df.index:
+        return df, 0
+    
+    # Check if transaction is untagged
+    current_tags = df.loc[df_index, "tags"]
+    if len(current_tags) > 0:
+        return df, 0  # Already tagged
+    
+    # Combine selected tags and new tags
+    all_tags = list(set(selected_tags + new_tags))
+    
+    # Apply tags to the specific transaction
+    df.at[df_index, "tags"] = all_tags
+    
+    return df, 1
+
+
+def get_daily_context_for_transaction(df: pd.DataFrame, transaction_id: str) -> Dict:
+    """Get all transactions from the same day as the selected transaction"""
+    if not transaction_id:
+        return {'transactions': [], 'summary': {}}
+    
+    try:
+        # Extract df_index from transaction_id (format: "trans_123")
+        df_index = int(transaction_id.split('_')[1])
+        
+        # Check if the transaction exists
+        if df_index not in df.index:
+            return {'transactions': [], 'summary': {}}
+        
+        # Get the date of the selected transaction
+        selected_date = pd.to_datetime(df.loc[df_index, 'Date']).date()
+        
+        # Find all transactions from the same day (convert dates for comparison)
+        df_with_dates = df.copy()
+        df_with_dates['Date'] = pd.to_datetime(df_with_dates['Date'])
+        same_day_mask = df_with_dates['Date'].dt.date == selected_date
+        same_day_transactions = df_with_dates[same_day_mask].copy()
+        
+        # Sort by amount (largest first) for better overview
+        same_day_transactions = same_day_transactions.sort_values('amount_abs', ascending=False)
+        
+        # Format transactions for display
+        transactions_list = []
+        total_amount = 0
+        
+        for idx, (df_idx, trans) in enumerate(same_day_transactions.iterrows()):
+            is_selected = df_idx == df_index
+            tags = trans.get('tags', [])
+            has_tags = len(tags) > 0 if isinstance(tags, list) else False
+            
+            transaction_info = {
+                'id': f"trans_{df_idx}",
+                'df_index': df_idx,
+                'vendor': trans['Description'],
+                'amount': trans['amount_abs'],
+                'display_amount': f"{trans['amount_abs']:.2f}€",
+                'tags': tags if isinstance(tags, list) else [],
+                'has_tags': has_tags,
+                'is_selected': is_selected,
+                'tags_display': ', '.join(tags) if has_tags else 'No tags'
+            }
+            transactions_list.append(transaction_info)
+            total_amount += trans['amount_abs']
+        
+        # Create summary
+        summary = {
+            'date': selected_date.strftime('%Y-%m-%d'),
+            'date_display': selected_date.strftime('%A, %B %d, %Y'),
+            'total_amount': total_amount,
+            'total_transactions': len(transactions_list),
+            'tagged_transactions': sum(1 for t in transactions_list if t['has_tags']),
+            'untagged_transactions': sum(1 for t in transactions_list if not t['has_tags'])
+        }
+        
+        return {
+            'transactions': transactions_list,
+            'summary': summary
+        }
+        
+    except (ValueError, IndexError, KeyError) as e:
+        return {'transactions': [], 'summary': {}}
 
 
 def get_tagging_progress(df: pd.DataFrame) -> Dict:

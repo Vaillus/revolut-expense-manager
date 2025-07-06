@@ -89,6 +89,7 @@ def create_tagging_layout():
         dcc.Store(id='tags-config-store'),
         dcc.Store(id='vendor-tags-config-store'),
         dcc.Store(id='current-filename-store'),
+        dcc.Store(id='selected-transaction-store'),
         
         dbc.Row([
             dbc.Col([
@@ -151,6 +152,9 @@ def create_interactive_tagging_layout():
             dbc.Col([
                 html.H5("📋 Transaction Details", className="text-primary mb-2"),
                 html.Div(id='transaction-details', className="mb-3"),
+                
+                html.H5("📅 Daily Context", className="text-primary mb-2"),
+                html.Div(id='daily-context', className="mb-3"),
                 
                 html.H5("💬 Feedback", className="text-primary mb-2"),
                 html.Div(id='tagging-feedback', className="mb-3")

@@ -2,7 +2,7 @@
 Dashboard callbacks and interactions
 """
 import plotly.graph_objects as go
-from dash import Input, Output, html, dash_table, State, callback_context
+from dash import Input, Output, html, dash_table, State, callback_context, ALL
 import pandas as pd
 from datetime import datetime
 import json
@@ -16,6 +16,7 @@ from ..utilities.data_loader import (
     get_raw_files, preprocess_raw_file, load_tagging_configs,
     get_untagged_vendors_from_df, get_suggested_tags_for_vendors,
     get_transaction_details_for_vendors, apply_tags_to_vendors,
+    apply_tags_to_transaction, get_daily_context_for_transaction,
     get_tagging_progress, save_tagged_file, update_configurations_on_disk
 )
 
@@ -302,7 +303,7 @@ def register_callbacks(app):
          Input('dataframe-store', 'data')]
     )
     def update_transaction_details(selected_vendors, df_data):
-        """Update transaction details for selected vendors"""
+        """Update transaction details for selected vendors - chronological view"""
         if not selected_vendors or not df_data:
             return html.P("Select vendors to see transaction details", className="text-muted")
         
@@ -316,113 +317,287 @@ def register_callbacks(app):
             if not details['transactions']:
                 return html.P("No untagged transactions found for selected vendors", className="text-muted")
             
-            # Create display
-            vendor_displays = []
-            for vendor, info in details['summary'].items():
-                vendor_displays.append(html.Div([
-                    html.H6(f"🏪 {vendor}", className="text-primary mb-2"),
-                    html.P(f"💰 Total: {info['total']:.2f}€ ({info['count']} transactions)", className="mb-2"),
-                    html.Div([
-                        html.P(f"• {trans['amount']:.2f}€ - {trans['date']}", className="mb-1 ms-3")
-                        for trans in info['transactions']
-                    ])
-                ], className="mb-3"))
+            # Create chronological display with selectable transactions
+            transactions_display = []
             
-            return html.Div(vendor_displays)
+            # Add header
+            transactions_display.append(html.H6("📅 Transactions (chronological)", className="text-primary mb-3"))
+            
+            # Create selectable transaction list
+            for trans in details['transactions']:
+                transaction_card = html.Div([
+                    html.Div([
+                        # Transaction details
+                        html.Div([
+                            html.Strong(f"🏪 {trans['vendor']}", className="text-primary"),
+                            html.Span(f" • {trans['display_amount']}", className="ms-2 text-success fw-bold"),
+                            html.Span(f" • {trans['display_date']}", className="ms-2 text-muted")
+                        ], className="transaction-content"),
+                        
+                        # Selection indicator (will be used later)
+                        html.Div([
+                            html.I(className="fas fa-circle-o", style={'color': '#6c757d'})
+                        ], className="selection-indicator")
+                    ], className="d-flex justify-content-between align-items-center p-2 border rounded mb-2",
+                       style={
+                           'cursor': 'pointer',
+                           'transition': 'all 0.2s ease',
+                           'backgroundColor': '#f8f9fa'
+                       },
+                       id={'type': 'transaction-card', 'index': trans['id']})
+                ])
+                transactions_display.append(transaction_card)
+            
+            # Add summary at the end
+            total_amount = sum(trans['amount'] for trans in details['transactions'])
+            total_count = len(details['transactions'])
+            
+            transactions_display.append(html.Div([
+                html.Hr(),
+                html.P(f"📊 Total: {total_amount:.2f}€ ({total_count} transactions)", 
+                      className="text-muted mb-0")
+            ], className="mt-3"))
+            
+            return html.Div(transactions_display)
             
         except Exception as e:
             return html.P(f"Error loading transaction details: {str(e)}", className="text-danger")
 
     @app.callback(
+        [Output('selected-transaction-store', 'data'),
+         Output({'type': 'transaction-card', 'index': ALL}, 'style')],
+        [Input({'type': 'transaction-card', 'index': ALL}, 'n_clicks')],
+        [State('selected-transaction-store', 'data'),
+         State({'type': 'transaction-card', 'index': ALL}, 'id')],
+        prevent_initial_call=True
+    )
+    def handle_transaction_selection(n_clicks_list, selected_transaction, card_ids):
+        """Handle selection of individual transactions"""
+        if not any(n_clicks_list) or not card_ids:
+            return selected_transaction, [{}] * len(card_ids)
+        
+        # Use callback context to determine which button was clicked
+        ctx = callback_context
+        if not ctx.triggered:
+            return selected_transaction, [{}] * len(card_ids)
+        
+        # Get the ID of the clicked element
+        clicked_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        
+        # Parse the clicked transaction ID
+        import json
+        try:
+            clicked_card_id = json.loads(clicked_id)
+            transaction_id = clicked_card_id['index']
+        except:
+            return selected_transaction, [{}] * len(card_ids)
+        
+        # Update selected transaction (toggle if same, otherwise select new)
+        new_selected = transaction_id if selected_transaction != transaction_id else None
+        
+        # Update styles
+        styles = []
+        for card_id in card_ids:
+            if card_id['index'] == new_selected:
+                # Selected style
+                styles.append({
+                    'cursor': 'pointer',
+                    'transition': 'all 0.2s ease',
+                    'backgroundColor': '#e3f2fd',
+                    'border': '2px solid #2196f3',
+                    'boxShadow': '0 2px 4px rgba(33, 150, 243, 0.2)'
+                })
+            else:
+                # Default style
+                styles.append({
+                    'cursor': 'pointer',
+                    'transition': 'all 0.2s ease',
+                    'backgroundColor': '#f8f9fa'
+                })
+        
+        return new_selected, styles
+
+    @app.callback(
+        Output('daily-context', 'children'),
+        [Input('selected-transaction-store', 'data'),
+         Input('dataframe-store', 'data')]
+    )
+    def update_daily_context(selected_transaction, df_data):
+        """Update daily context when a transaction is selected"""
+        if not selected_transaction or not df_data:
+            return html.P("Select a transaction to see daily context", className="text-muted")
+        
+        try:
+            # Convert dict back to DataFrame
+            df = pd.DataFrame(df_data)
+            
+            # Get daily context
+            context = get_daily_context_for_transaction(df, selected_transaction)
+            
+            if not context['transactions']:
+                return html.P("No context available for this transaction", className="text-muted")
+            
+            # Create display
+            summary = context['summary']
+            
+            # Header with date and summary
+            context_display = [
+                html.Div([
+                    html.H6(f"📅 {summary['date_display']}", className="text-primary mb-2"),
+                    html.Div([
+                        html.Span(f"💰 Total: {summary['total_amount']:.2f}€", className="me-3"),
+                        html.Span(f"📊 {summary['total_transactions']} transactions", className="me-3"),
+                        html.Span(f"🏷️ {summary['tagged_transactions']} tagged", className="text-success")
+                    ], className="mb-3 text-muted")
+                ], className="border-bottom pb-2 mb-3")
+            ]
+            
+            # Transaction list
+            for trans in context['transactions']:
+                # Style based on status
+                if trans['is_selected']:
+                    card_style = {
+                        'backgroundColor': '#e3f2fd',
+                        'border': '2px solid #2196f3'
+                    }
+                    vendor_class = "text-primary fw-bold"
+                elif trans['has_tags']:
+                    card_style = {
+                        'backgroundColor': '#e8f5e8',
+                        'border': '1px solid #28a745'
+                    }
+                    vendor_class = "text-success"
+                else:
+                    card_style = {
+                        'backgroundColor': '#fff3cd',
+                        'border': '1px solid #ffc107'
+                    }
+                    vendor_class = "text-warning"
+                
+                transaction_card = html.Div([
+                    html.Div([
+                        html.Div([
+                            html.Strong(
+                                f"{'👆 ' if trans['is_selected'] else ''}🏪 {trans['vendor']}", 
+                                className=vendor_class
+                            ),
+                            html.Div(f"{trans['display_amount']}", className="text-success fw-bold"),
+                        ], className="d-flex justify-content-between align-items-center"),
+                        
+                        html.Div([
+                            html.Small(
+                                f"🏷️ {trans['tags_display']}", 
+                                className="text-muted"
+                            )
+                        ], className="mt-1")
+                    ])
+                ], className="p-2 rounded mb-2", style=card_style)
+                
+                context_display.append(transaction_card)
+            
+            return html.Div(context_display)
+            
+        except Exception as e:
+            return html.P(f"Error loading daily context: {str(e)}", className="text-danger")
+
+    @app.callback(
         [
-            Output('current-dataframe', 'data'),
-            Output('tagging-progress', 'value'),
-            Output('tagging-progress', 'label'),
-            Output('tagging-alert', 'children'),
-            Output('tagging-alert', 'is_open'),
-            Output('vendor-selection', 'value'),
-            Output('tag-selection', 'value'),
-            Output('new-tag-input', 'value'),
-            Output('tags-config', 'data'),
-            Output('vendor-tags-config', 'data'),
-            Output('vendor-selection', 'options'),
-            Output('tag-selection', 'options'),
+            Output('dataframe-store', 'data', allow_duplicate=True),
+            Output('tagging-feedback', 'children'),
+            Output('vendor-select', 'value'),
+            Output('tag-select', 'value'),
+            Output('new-tags-input', 'value'),
+            Output('save-file-btn', 'disabled'),
+            Output('selected-transaction-store', 'data', allow_duplicate=True),
         ],
         [
-            Input('apply-tags-button', 'n_clicks'),
+            Input('apply-tags-btn', 'n_clicks'),
         ],
         [
-            State('current-dataframe', 'data'),
-            State('vendor-selection', 'value'),
-            State('tag-selection', 'value'),
-            State('new-tag-input', 'value'),
-            State('tags-config', 'data'),
-            State('vendor-tags-config', 'data'),
+            State('dataframe-store', 'data'),
+            State('vendor-select', 'value'),
+            State('tag-select', 'value'),
+            State('new-tags-input', 'value'),
+            State('tags-config-store', 'data'),
+            State('vendor-tags-config-store', 'data'),
+            State('selected-transaction-store', 'data'),
         ],
         prevent_initial_call=True
     )
-    def apply_tags(n_clicks, current_dataframe, selected_vendors, selected_tags, new_tag_input, tags_config, vendor_tags_config):
-        """Apply tags to selected vendors and update configurations on disk"""
-        if n_clicks is None or not current_dataframe:
-            raise PreventUpdate
+    def apply_tags(n_clicks, df_data, selected_vendors, selected_tags, new_tags_input, tags_config, vendor_tags_config, selected_transaction):
+        """Apply tags to selected vendors/transaction and update configurations on disk"""
+        if not n_clicks or not df_data:
+            return df_data, html.Div(), [], [], "", True, None
         
         # Convert data back to DataFrame
-        df = pd.DataFrame(current_dataframe)
+        df = pd.DataFrame(df_data)
         
         # Parse new tags
-        new_tags = [tag.strip() for tag in (new_tag_input or '').split(',') if tag.strip()]
+        new_tags = [tag.strip() for tag in (new_tags_input or '').split(',') if tag.strip()]
         
-        # Apply tags to DataFrame
-        updated_df, affected_count = apply_tags_to_vendors(
-            df, 
-            selected_vendors or [], 
-            selected_tags or [], 
-            new_tags
-        )
+        # Determine tagging mode: individual transaction or vendors
+        if selected_transaction:
+            # Mode: Tag individual transaction
+            updated_df, affected_count = apply_tags_to_transaction(
+                df, 
+                selected_transaction, 
+                selected_tags or [], 
+                new_tags
+            )
+            
+            # Get vendor name for configuration update
+            transaction_df_index = int(selected_transaction.split('_')[1])
+            vendor_name = df.loc[transaction_df_index, 'Description']
+            vendors_for_config = [vendor_name]
+            
+            tagging_target = f"transaction {selected_transaction}"
+        else:
+            # Mode: Tag all transactions for selected vendors
+            updated_df, affected_count = apply_tags_to_vendors(
+                df, 
+                selected_vendors or [], 
+                selected_tags or [], 
+                new_tags
+            )
+            
+            vendors_for_config = selected_vendors or []
+            tagging_target = f"vendors {', '.join(vendors_for_config)}"
         
         # Get all tags being applied
         all_tags = list(set((selected_tags or []) + new_tags))
         
-        # Update JSON configurations on disk and get updated configs
-        updated_tags_config, updated_vendor_tags_config = update_configurations_on_disk(
-            all_tags, 
-            selected_vendors or []
-        )
+        # Update JSON configurations on disk for new tags and associations
+        if all_tags and vendors_for_config:
+            update_configurations_on_disk(all_tags, vendors_for_config)
         
-        # Calculate progress
-        progress = get_tagging_progress(updated_df)
-        
-        # Update vendor list (remove vendors that are now fully tagged)
-        vendor_options = get_untagged_vendors_from_df(updated_df, updated_vendor_tags_config)
-        
-        # Update tag options with new configurations
-        tag_options = get_suggested_tags_for_vendors(
-            [], 
-            updated_tags_config, 
-            updated_vendor_tags_config
-        )
-        
-        # Create success message
-        alert_message = dbc.Alert(
-            f"✅ {affected_count} transaction(s) tagged successfully with {', '.join(all_tags)}",
-            color="success",
-            dismissable=True
-        )
-        
-        return (
-            updated_df.to_dict('records'),
-            progress['progress_percentage'],
-            f"{progress['untagged_transactions']} transactions remaining",
-            alert_message,
-            True,
-            [],  # Clear vendor selection
-            [],  # Clear tag selection
-            '',  # Clear new tag input
-            updated_tags_config,
-            updated_vendor_tags_config,
-            vendor_options,
-            tag_options
-        )
+        if affected_count > 0:
+            # Check if tagging is complete for save button
+            progress = get_tagging_progress(updated_df)
+            save_btn_disabled = progress['untagged_transactions'] > 0
+            
+            # Create feedback message
+            feedback = html.Div([
+                html.Div([
+                    html.H6("✅ Tags Applied Successfully!", className="text-success mb-2"),
+                    html.P(f"Tagged {affected_count} transactions with: {', '.join(all_tags)}", className="mb-1"),
+                    html.P(f"Target: {tagging_target}", className="mb-1")
+                ], className="p-3 border rounded", style={'background-color': '#d4edda'})
+            ])
+            
+            return (
+                updated_df.to_dict('records'),
+                feedback,
+                [],  # Clear vendor selection
+                [],  # Clear tag selection
+                '',  # Clear new tag input
+                save_btn_disabled,
+                None  # Clear selected transaction
+            )
+        else:
+            feedback = html.Div([
+                html.P("⚠️ No transactions were tagged. Please check your selection.", className="text-warning")
+            ])
+            return df_data, feedback, selected_vendors, selected_tags, new_tags_input, True, selected_transaction
 
     @app.callback(
         Output('tagging-feedback', 'children', allow_duplicate=True),
