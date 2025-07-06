@@ -2,7 +2,7 @@
 Dashboard callbacks and interactions
 """
 import plotly.graph_objects as go
-from dash import Input, Output, html, dash_table, State, callback_context, ALL
+from dash import Input, Output, html, dash_table, State, callback_context, ALL, dcc
 import pandas as pd
 from datetime import datetime
 import json
@@ -17,7 +17,8 @@ from ..utilities.data_loader import (
     get_untagged_vendors_from_df, get_suggested_tags_for_vendors,
     get_transaction_details_for_vendors, apply_tags_to_vendors,
     apply_tags_to_transaction, get_daily_context_for_transaction,
-    get_tagging_progress, save_tagged_file, update_configurations_on_disk
+    get_tagging_progress, save_tagged_file, update_configurations_on_disk,
+    restore_dataframe_from_store
 )
 
 
@@ -208,47 +209,48 @@ def register_callbacks(app):
         [Input('dataframe-store', 'data')]
     )
     def update_tagging_progress(df_data):
-        """Update tagging progress display"""
+        """Update modern tagging progress display"""
         if not df_data:
             return html.Div()
         
         try:
-            # Convert dict back to DataFrame
-            df = pd.DataFrame(df_data)
+            # Convert dict back to DataFrame with proper date handling
+            df = restore_dataframe_from_store(df_data)
             
             # Get progress stats
             progress = get_tagging_progress(df)
+            percentage = progress['progress_percentage']
+            
+            # Choose color based on progress
+            if percentage < 30:
+                color = "#dc3545"  # Red
+            elif percentage < 70:
+                color = "#ffc107"  # Yellow
+            else:
+                color = "#28a745"  # Green
             
             return html.Div([
                 html.Div([
-                    html.H6(f"📊 Progress: {progress['tagged_transactions']}/{progress['total_transactions']} transactions tagged", 
-                           className="text-primary mb-2"),
                     html.Div([
-                        html.Div(
-                            style={
-                                'width': f"{progress['progress_percentage']:.1f}%",
-                                'height': '20px',
-                                'backgroundColor': '#28a745',
-                                'borderRadius': '10px',
-                                'transition': 'width 0.3s ease'
-                            }
-                        )
-                    ], style={
-                        'width': '100%',
-                        'height': '20px',
-                        'backgroundColor': '#e9ecef',
-                        'borderRadius': '10px',
-                        'overflow': 'hidden'
-                    }),
-                    html.P(f"🏷️ {progress['untagged_transactions']} transactions remaining", 
-                          className="text-muted mt-2 mb-0")
-                ], className="p-3 border rounded", style={'background-color': '#f8f9fa'})
+                        html.Span(f"📊 {progress['tagged_transactions']}/{progress['total_transactions']} tagged", className="fw-bold"),
+                        html.Span(f"{percentage:.0f}%", className="fw-bold")
+                    ], className="d-flex justify-content-between mb-2"),
+                    
+                    # Modern progress bar
+                    dbc.Progress(
+                        value=percentage,
+                        color="success" if percentage >= 70 else "warning" if percentage >= 30 else "danger",
+                        style={'height': '8px'},
+                        className="mb-2"
+                    ),
+                    
+                    html.P(f"🎯 {progress['untagged_transactions']} transactions remaining", 
+                          className="mb-0 small")
+                ])
             ])
             
         except Exception as e:
-            return html.Div([
-                html.P(f"Error updating progress: {str(e)}", className="text-danger")
-            ])
+            return html.P(f"Error: {str(e)}", className="text-danger small")
 
     @app.callback(
         Output('vendor-select', 'options'),
@@ -261,8 +263,8 @@ def register_callbacks(app):
             return []
         
         try:
-            # Convert dict back to DataFrame
-            df = pd.DataFrame(df_data)
+            # Convert dict back to DataFrame with proper date handling
+            df = restore_dataframe_from_store(df_data)
             
             # Get untagged vendors
             vendors_options = get_untagged_vendors_from_df(df, vendor_tags)
@@ -308,8 +310,8 @@ def register_callbacks(app):
             return html.P("Select vendors to see transaction details", className="text-muted")
         
         try:
-            # Convert dict back to DataFrame
-            df = pd.DataFrame(df_data)
+            # Convert dict back to DataFrame with proper date handling
+            df = restore_dataframe_from_store(df_data)
             
             # Get transaction details
             details = get_transaction_details_for_vendors(df, selected_vendors)
@@ -418,6 +420,168 @@ def register_callbacks(app):
         return new_selected, styles
 
     @app.callback(
+        Output('tagging-panel-content', 'children'),
+        [Input('selected-transaction-store', 'data'),
+         Input('vendor-select', 'value'),
+         Input('dataframe-store', 'data'),
+         Input('tags-config-store', 'data'),
+         Input('vendor-tags-config-store', 'data')]
+    )
+    def update_tagging_panel(selected_transaction, selected_vendors, df_data, tags_config, vendor_tags_config):
+        """Update the tagging panel for both transaction and vendor tagging"""
+        if not df_data:
+            return html.Div([
+                html.Div([
+                    html.I(className="fas fa-hand-pointer fa-2x text-muted"),
+                    html.P("Select vendors or a transaction to start tagging", className="text-muted mt-2 mb-0")
+                ], className="text-center py-4")
+            ])
+        
+        try:
+            # Convert dict back to DataFrame with proper date handling
+            df = restore_dataframe_from_store(df_data)
+            tags = tags_config or {}
+            vendor_tags = vendor_tags_config or {}
+            
+            # Determine tagging mode and get vendor(s)
+            if selected_transaction:
+                # Individual transaction tagging
+                df_index = int(selected_transaction.split('_')[1])
+                if df_index not in df.index:
+                    return html.P("Transaction not found", className="text-danger")
+                
+                transaction = df.loc[df_index]
+                vendor = transaction['Description']
+                amount = transaction['amount_abs']
+                date = pd.to_datetime(transaction['Date']).strftime('%Y-%m-%d')
+                
+                # Get suggested tags for this vendor
+                suggested_tags = []
+                if vendor in vendor_tags:
+                    suggested_tags = [{'label': f"⭐ {tag}", 'value': tag} for tag in vendor_tags[vendor].keys()]
+                
+                other_tags = [{'label': tag, 'value': tag} for tag in tags.keys() if tag not in [t['value'] for t in suggested_tags]]
+                other_tags.sort(key=lambda x: tags.get(x['value'], 0), reverse=True)
+                
+                all_tag_options = suggested_tags + other_tags
+                
+                # Transaction info and tagging interface
+                return html.Div([
+                    dbc.Alert([
+                        html.H6(f"📋 Selected Transaction", className="mb-2"),
+                        html.P([
+                            html.Strong(f"🏪 {vendor}"),
+                            html.Br(),
+                            f"💰 {amount:.2f}€ • 📅 {date}"
+                        ], className="mb-0")
+                    ], color="info", className="mb-3"),
+                    
+                    html.Div([
+                        html.Label("🏷️ Select Tags:", className="form-label fw-bold"),
+                        html.P("⭐ = suggested for this vendor", className="text-muted small mb-2"),
+                        dcc.Dropdown(
+                            id='tag-select',
+                            multi=True,
+                            placeholder="Choose existing tags...",
+                            options=all_tag_options,
+                            style={'marginBottom': '15px'}
+                        )
+                    ]),
+                    
+                    html.Div([
+                        html.Label("➕ Add New Tags:", className="form-label fw-bold"),
+                        dcc.Input(
+                            id='new-tags-input',
+                            type='text',
+                            placeholder="Enter new tags separated by commas",
+                            className="form-control mb-3"
+                        )
+                    ]),
+                    
+                    html.Div([
+                        dbc.Button(
+                            "🏷️ Apply Tags to This Transaction",
+                            id='apply-tags-btn',
+                            color="success",
+                            size="lg",
+                            className="w-100"
+                        )
+                    ], className="d-grid")
+                ])
+                
+            elif selected_vendors:
+                # Vendor-based tagging
+                vendor_list = selected_vendors if isinstance(selected_vendors, list) else [selected_vendors]
+                
+                # Get suggested tags for all selected vendors
+                suggested_tags = []
+                for vendor in vendor_list:
+                    if vendor in vendor_tags:
+                        for tag in vendor_tags[vendor].keys():
+                            if not any(st['value'] == tag for st in suggested_tags):
+                                suggested_tags.append({'label': f"⭐ {tag}", 'value': tag})
+                
+                other_tags = [{'label': tag, 'value': tag} for tag in tags.keys() if tag not in [t['value'] for t in suggested_tags]]
+                other_tags.sort(key=lambda x: tags.get(x['value'], 0), reverse=True)
+                
+                all_tag_options = suggested_tags + other_tags
+                
+                # Vendor info and tagging interface
+                return html.Div([
+                    dbc.Alert([
+                        html.H6(f"🏪 Selected Vendors ({len(vendor_list)})", className="mb-2"),
+                        html.P([
+                            html.Strong(", ".join(vendor_list[:2])),
+                            f" {'and others...' if len(vendor_list) > 2 else ''}"
+                        ], className="mb-0")
+                    ], color="primary", className="mb-3"),
+                    
+                    html.Div([
+                        html.Label("🏷️ Select Tags:", className="form-label fw-bold"),
+                        html.P("⭐ = suggested for these vendors", className="text-muted small mb-2"),
+                        dcc.Dropdown(
+                            id='tag-select',
+                            multi=True,
+                            placeholder="Choose existing tags...",
+                            options=all_tag_options,
+                            style={'marginBottom': '15px'}
+                        )
+                    ]),
+                    
+                    html.Div([
+                        html.Label("➕ Add New Tags:", className="form-label fw-bold"),
+                        dcc.Input(
+                            id='new-tags-input',
+                            type='text',
+                            placeholder="Enter new tags separated by commas",
+                            className="form-control mb-3"
+                        )
+                    ]),
+                    
+                    html.Div([
+                        dbc.Button(
+                            f"🏷️ Apply Tags to All Transactions from {len(vendor_list)} Vendor(s)",
+                            id='apply-tags-btn',
+                            color="primary",
+                            size="lg",
+                            className="w-100"
+                        )
+                    ], className="d-grid")
+                ])
+                
+            else:
+                # No selection
+                return html.Div([
+                    html.Div([
+                        html.I(className="fas fa-hand-pointer fa-2x text-muted"),
+                        html.P("Select vendors or a transaction to start tagging", className="text-muted mt-2 mb-0")
+                    ], className="text-center py-4")
+                ])
+            
+        except Exception as e:
+            return html.P(f"Error: {str(e)}", className="text-danger")
+
+    @app.callback(
         Output('daily-context', 'children'),
         [Input('selected-transaction-store', 'data'),
          Input('dataframe-store', 'data')]
@@ -428,8 +592,8 @@ def register_callbacks(app):
             return html.P("Select a transaction to see daily context", className="text-muted")
         
         try:
-            # Convert dict back to DataFrame
-            df = pd.DataFrame(df_data)
+            # Convert dict back to DataFrame with proper date handling
+            df = restore_dataframe_from_store(df_data)
             
             # Get daily context
             context = get_daily_context_for_transaction(df, selected_transaction)
@@ -486,7 +650,7 @@ def register_callbacks(app):
                         
                         html.Div([
                             html.Small(
-                                f"🏷️ {trans['tags_display']}", 
+                                f"🕐 {trans.get('time', 'N/A')} • 🏷️ {trans['tags_display']}", 
                                 className="text-muted"
                             )
                         ], className="mt-1")
@@ -526,11 +690,17 @@ def register_callbacks(app):
     )
     def apply_tags(n_clicks, df_data, selected_vendors, selected_tags, new_tags_input, tags_config, vendor_tags_config, selected_transaction):
         """Apply tags to selected vendors/transaction and update configurations on disk"""
-        if not n_clicks or not df_data:
-            return df_data, html.Div(), [], [], "", True, None
+        # Check if callback was triggered by actual button click
+        if not callback_context.triggered or not n_clicks or not df_data:
+            return df_data, html.Div(), selected_vendors or [], selected_tags or [], new_tags_input or "", True, selected_transaction
         
-        # Convert data back to DataFrame
-        df = pd.DataFrame(df_data)
+        # Verify the trigger was the apply button
+        trigger_id = callback_context.triggered[0]['prop_id'].split('.')[0]
+        if trigger_id != 'apply-tags-btn':
+            return df_data, html.Div(), selected_vendors or [], selected_tags or [], new_tags_input or "", True, selected_transaction
+        
+        # Convert data back to DataFrame with proper date handling
+        df = restore_dataframe_from_store(df_data)
         
         # Parse new tags
         new_tags = [tag.strip() for tag in (new_tags_input or '').split(',') if tag.strip()]
@@ -575,14 +745,20 @@ def register_callbacks(app):
             progress = get_tagging_progress(updated_df)
             save_btn_disabled = progress['untagged_transactions'] > 0
             
-            # Create feedback message
-            feedback = html.Div([
-                html.Div([
-                    html.H6("✅ Tags Applied Successfully!", className="text-success mb-2"),
-                    html.P(f"Tagged {affected_count} transactions with: {', '.join(all_tags)}", className="mb-1"),
-                    html.P(f"Target: {tagging_target}", className="mb-1")
-                ], className="p-3 border rounded", style={'background-color': '#d4edda'})
-            ])
+            # Create modern feedback message
+            feedback = dbc.Alert([
+                html.H5([
+                    html.I(className="fas fa-check-circle me-2"),
+                    "Tags Applied Successfully!"
+                ], className="alert-heading mb-3"),
+                html.P([
+                    html.Strong(f"🎯 {affected_count} transaction tagged"),
+                    html.Br(),
+                    f"🏷️ Tags: {', '.join(all_tags)}",
+                    html.Br(),
+                    f"📋 Target: {tagging_target}"
+                ], className="mb-0")
+            ], color="success", dismissable=True, duration=4000)
             
             return (
                 updated_df.to_dict('records'),
@@ -594,10 +770,50 @@ def register_callbacks(app):
                 None  # Clear selected transaction
             )
         else:
-            feedback = html.Div([
-                html.P("⚠️ No transactions were tagged. Please check your selection.", className="text-warning")
-            ])
+            feedback = dbc.Alert([
+                html.H6([
+                    html.I(className="fas fa-exclamation-triangle me-2"),
+                    "No Changes Made"
+                ], className="alert-heading mb-2"),
+                html.P("Please select tags or add new ones before applying.", className="mb-0")
+            ], color="warning", dismissable=True)
+            
             return df_data, feedback, selected_vendors, selected_tags, new_tags_input, True, selected_transaction
+
+
+
+    @app.callback(
+        [Output('save-file-btn', 'children'),
+         Output('save-file-btn', 'color')],
+        [Input('dataframe-store', 'data')]
+    )
+    def update_save_button(df_data):
+        """Update save button appearance based on progress"""
+        if not df_data:
+            return "💾 Save Progress", "secondary"
+        
+        try:
+            df = restore_dataframe_from_store(df_data)
+            progress = get_tagging_progress(df)
+            
+            tagged_count = progress['tagged_transactions']
+            total_count = progress['total_transactions']
+            
+            if tagged_count == 0:
+                return "💾 Save Progress", "secondary"
+            elif tagged_count == total_count:
+                return [
+                    html.I(className="fas fa-check-circle me-2"),
+                    f"💾 Save Complete File ({tagged_count}/{total_count})"
+                ], "success"
+            else:
+                return [
+                    html.I(className="fas fa-save me-2"),
+                    f"💾 Save Progress ({tagged_count}/{total_count})"
+                ], "primary"
+                
+        except Exception:
+            return "💾 Save Progress", "secondary"
 
     @app.callback(
         Output('tagging-feedback', 'children', allow_duplicate=True),
@@ -612,8 +828,8 @@ def register_callbacks(app):
             return html.Div()
         
         try:
-            # Convert dict back to DataFrame
-            df = pd.DataFrame(df_data)
+            # Convert dict back to DataFrame with proper date handling
+            df = restore_dataframe_from_store(df_data)
             
             # Save file
             success = save_tagged_file(df, filename)

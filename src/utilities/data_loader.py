@@ -276,8 +276,8 @@ def preprocess_raw_file(filename: str) -> tuple:
     required_columns = ['Type', 'Started Date', 'Description', 'Amount', 'Currency', 'State']
     df = df[required_columns].copy()
     
-    # Step 2: Process date column
-    df['Started Date'] = pd.to_datetime(df['Started Date']).dt.date
+    # Step 2: Process date column (keep time information)
+    df['Started Date'] = pd.to_datetime(df['Started Date'])
     df = df.rename(columns={'Started Date': 'Date'})
     
     # Step 3: Sort by date (chronological order) - more logical for tagging
@@ -525,7 +525,7 @@ def apply_tags_to_transaction(df: pd.DataFrame, transaction_id: str, selected_ta
 
 
 def get_daily_context_for_transaction(df: pd.DataFrame, transaction_id: str) -> Dict:
-    """Get all transactions from the same day as the selected transaction"""
+    """Get all transactions from the same day as the selected transaction, sorted by time"""
     if not transaction_id:
         return {'transactions': [], 'summary': {}}
     
@@ -538,7 +538,8 @@ def get_daily_context_for_transaction(df: pd.DataFrame, transaction_id: str) -> 
             return {'transactions': [], 'summary': {}}
         
         # Get the date of the selected transaction
-        selected_date = pd.to_datetime(df.loc[df_index, 'Date']).date()
+        selected_datetime = pd.to_datetime(df.loc[df_index, 'Date'])
+        selected_date = selected_datetime.date()
         
         # Find all transactions from the same day (convert dates for comparison)
         df_with_dates = df.copy()
@@ -546,8 +547,8 @@ def get_daily_context_for_transaction(df: pd.DataFrame, transaction_id: str) -> 
         same_day_mask = df_with_dates['Date'].dt.date == selected_date
         same_day_transactions = df_with_dates[same_day_mask].copy()
         
-        # Sort by amount (largest first) for better overview
-        same_day_transactions = same_day_transactions.sort_values('amount_abs', ascending=False)
+        # Sort by time (chronological order within the day)
+        same_day_transactions = same_day_transactions.sort_values('Date', ascending=True)
         
         # Format transactions for display
         transactions_list = []
@@ -558,12 +559,19 @@ def get_daily_context_for_transaction(df: pd.DataFrame, transaction_id: str) -> 
             tags = trans.get('tags', [])
             has_tags = len(tags) > 0 if isinstance(tags, list) else False
             
+            # Extract time information
+            trans_datetime = pd.to_datetime(trans['Date'])
+            has_time = trans_datetime.time() != pd.Timestamp('00:00:00').time()
+            
             transaction_info = {
                 'id': f"trans_{df_idx}",
                 'df_index': df_idx,
                 'vendor': trans['Description'],
                 'amount': trans['amount_abs'],
                 'display_amount': f"{trans['amount_abs']:.2f}€",
+                'datetime': trans_datetime,
+                'time': trans_datetime.strftime('%H:%M') if has_time else 'N/A',
+                'has_time': has_time,
                 'tags': tags if isinstance(tags, list) else [],
                 'has_tags': has_tags,
                 'is_selected': is_selected,
@@ -589,6 +597,21 @@ def get_daily_context_for_transaction(df: pd.DataFrame, transaction_id: str) -> 
         
     except (ValueError, IndexError, KeyError) as e:
         return {'transactions': [], 'summary': {}}
+
+
+def restore_dataframe_from_store(df_data: list) -> pd.DataFrame:
+    """Restore DataFrame from store data, ensuring dates are properly converted"""
+    if not df_data:
+        return pd.DataFrame()
+    
+    # Convert dict back to DataFrame
+    df = pd.DataFrame(df_data)
+    
+    # Ensure Date column is datetime with time information
+    if 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'])
+    
+    return df
 
 
 def get_tagging_progress(df: pd.DataFrame) -> Dict:

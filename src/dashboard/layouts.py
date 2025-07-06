@@ -91,6 +91,9 @@ def create_tagging_layout():
         dcc.Store(id='current-filename-store'),
         dcc.Store(id='selected-transaction-store'),
         
+        # Global feedback element that's always present
+        html.Div(id='tagging-feedback', className="mb-3"),
+        
         dbc.Row([
             dbc.Col([
                 html.H4("📁 Raw Files Available", className="text-primary mb-3"),
@@ -103,61 +106,95 @@ def create_tagging_layout():
 
 
 def create_interactive_tagging_layout():
-    """Layout for the interactive tagging interface"""
+    """Modern layout for the interactive tagging interface"""
     return html.Div([
-        html.Hr(),
-        
-        # Progress section
-        html.Div([
-            html.H4("🏷️ Interactive Tagging", className="text-success mb-3"),
-            html.Div(id='tagging-progress', className="mb-3")
-        ]),
+        # Progress Bar Section
+        dbc.Card([
+            dbc.CardBody([
+                html.Div([
+                    html.H4("🏷️ Interactive Tagging", className="mb-0"),
+                    html.Div(id='tagging-progress', className="mt-2")
+                ])
+            ])
+        ], className="mb-4", style={'background': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 'color': 'white'}),
         
         dbc.Row([
-            # Left column: Vendor and Tag selection
+            # Left Panel: Workflow Steps
             dbc.Col([
-                html.H5("🏪 Select Vendors", className="text-primary mb-2"),
-                html.P("Choose vendors to tag (🟢 = known vendor):", className="text-muted mb-2"),
-                dcc.Dropdown(
-                    id='vendor-select',
-                    multi=True,
-                    placeholder="Select vendors...",
-                    style={'marginBottom': '20px'}
-                ),
+                # Step 1: Vendor Selection
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H5("🔸 STEP 1: Select Vendors", className="mb-0 text-primary")
+                    ]),
+                    dbc.CardBody([
+                        html.P("Choose vendors to see their transactions", className="text-muted mb-3"),
+                        dcc.Dropdown(
+                            id='vendor-select',
+                            multi=True,
+                            placeholder="🔍 Search and select vendors...",
+                            style={'marginBottom': '15px'}
+                        ),
+                    ])
+                ], className="mb-3"),
                 
-                html.H5("🏷️ Select Tags", className="text-primary mb-2"),
-                html.P("Choose existing tags (⭐ = suggested for selected vendors):", className="text-muted mb-2"),
-                dcc.Dropdown(
-                    id='tag-select',
-                    multi=True,
-                    placeholder="Select tags...",
-                    style={'marginBottom': '20px'}
-                ),
+                # Step 2: Transaction List
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H5("🔸 STEP 2: Select Transaction", className="mb-0 text-primary")
+                    ]),
+                    dbc.CardBody([
+                        html.P("Click on a transaction to select it for tagging", className="text-muted mb-3"),
+                        html.Div(id='transaction-details', style={'maxHeight': '300px', 'overflowY': 'auto'})
+                    ])
+                ], className="mb-3"),
                 
-                html.H5("➕ Add New Tags", className="text-primary mb-2"),
-                dcc.Input(
-                    id='new-tags-input',
-                    type='text',
-                    placeholder="Enter new tags separated by commas",
-                    style={'width': '100%', 'marginBottom': '20px'}
-                ),
-                
-                html.Div([
-                    dbc.Button("Apply Tags", id='apply-tags-btn', color="success", className="me-2"),
-                    dbc.Button("Save File", id='save-file-btn', color="primary", disabled=True)
-                ], className="d-flex mb-3")
-            ], width=6),
+                # Step 3: Action Buttons
+                dbc.Card([
+                    dbc.CardBody([
+                        html.Div([
+                            dbc.Button(
+                                "💾 Save Progress", 
+                                id='save-file-btn', 
+                                color="success", 
+                                size="lg",
+                                disabled=True,
+                                className="w-100"
+                            )
+                        ])
+                    ])
+                ], className="mb-3")
+            ], width=5),
             
-            # Right column: Transaction details and feedback
+            # Right Panel: Tagging & Context
             dbc.Col([
-                html.H5("📋 Transaction Details", className="text-primary mb-2"),
-                html.Div(id='transaction-details', className="mb-3"),
+                # Tagging Panel
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H5("🔸 STEP 3: Apply Tags", className="mb-0 text-success")
+                    ]),
+                    dbc.CardBody([
+                        html.Div(id='tagging-panel-content', children=[
+                            html.Div([
+                                html.I(className="fas fa-hand-pointer fa-2x text-muted"),
+                                html.P("Select a transaction to start tagging", className="text-muted mt-2 mb-0")
+                            ], className="text-center py-4")
+                        ])
+                    ])
+                ], className="mb-3"),
                 
-                html.H5("📅 Daily Context", className="text-primary mb-2"),
-                html.Div(id='daily-context', className="mb-3"),
+                # Daily Context Panel  
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H5("📅 Daily Context", className="mb-0 text-info")
+                    ]),
+                    dbc.CardBody([
+                        html.Div(id='daily-context', children=[
+                            html.P("Select a transaction to see what else happened that day", className="text-muted mb-0")
+                        ])
+                    ])
+                ], className="mb-3"),
                 
-                html.H5("💬 Feedback", className="text-primary mb-2"),
-                html.Div(id='tagging-feedback', className="mb-3")
-            ], width=6)
+
+            ], width=7)
         ])
     ]) 
