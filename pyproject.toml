@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "revolut-expense-manager"
+version = "0.1.0"
+description = "A tool to categorize and analyze Revolut monthly expenses"
+authors = [{name = "Vaillus"}]
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = [
+    "pandas>=1.5.0",
+    "plotly>=5.0.0",
+    "dash>=2.0.0",
+    "dash-bootstrap-components>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter",
+    "ipywidgets",
+    "matplotlib",
+    "seaborn",
+]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "." 
