@@ -5,6 +5,77 @@ import dash_bootstrap_components as dbc
 from dash import dcc, html, dash_table
 
 
+def create_tag_cloud(tags_options, selected_tags=None):
+    """Create a responsive tag cloud with clickable badges"""
+    if not tags_options:
+        return html.P("No tags available", className="text-muted")
+    
+    if selected_tags is None:
+        selected_tags = []
+    
+    tag_badges = []
+    for tag_option in tags_options:
+        tag_value = tag_option['value']
+        tag_label = tag_option['label']
+        is_selected = tag_value in selected_tags
+        
+        # Check if it's a suggested tag (starts with ⭐)
+        is_suggested = tag_label.startswith('⭐')
+        
+        # Determine badge style based on state
+        if is_selected:
+            badge_color = "primary"
+            badge_style = {
+                'margin': '2px',
+                'cursor': 'pointer',
+                'border': '2px solid #007bff',
+                'transform': 'scale(1.05)',
+                'transition': 'all 0.2s ease'
+            }
+        elif is_suggested:
+            badge_color = "warning"
+            badge_style = {
+                'margin': '2px',
+                'cursor': 'pointer',
+                'border': '1px solid #ffc107',
+                'transition': 'all 0.2s ease'
+            }
+        else:
+            badge_color = "secondary"
+            badge_style = {
+                'margin': '2px',
+                'cursor': 'pointer',
+                'border': '1px solid #6c757d',
+                'transition': 'all 0.2s ease'
+            }
+        
+        badge = dbc.Badge(
+            tag_label,
+            id={'type': 'tag-badge', 'index': tag_value},
+            color=badge_color,
+            pill=True,
+            style=badge_style,
+            className="tag-badge"
+        )
+        tag_badges.append(badge)
+    
+    return html.Div(
+        tag_badges,
+        style={
+            'display': 'flex',
+            'flexWrap': 'wrap',
+            'gap': '2px',
+            'alignItems': 'center',
+            'minHeight': '60px',
+            'padding': '10px',
+            'border': '1px solid #dee2e6',
+            'borderRadius': '8px',
+            'backgroundColor': '#f8f9fa'
+        },
+        className="tag-cloud-container"
+    )
+
+
 def create_main_layout():
     """Create the main dashboard layout with tabs"""
     return dbc.Container([
@@ -90,6 +161,8 @@ def create_tagging_layout():
         dcc.Store(id='vendor-tags-config-store'),
         dcc.Store(id='current-filename-store'),
         dcc.Store(id='selected-transaction-store'),
+        dcc.Store(id='selected-tags-store', data=[]),
+        dcc.Store(id='selected-vendors-store', data=[]),
         
         # Global feedback element that's always present
         html.Div(id='tagging-feedback', className="mb-3"),
@@ -112,11 +185,11 @@ def create_interactive_tagging_layout():
         dbc.Card([
             dbc.CardBody([
                 html.Div([
-                    html.H4("🏷️ Interactive Tagging", className="mb-0"),
+                    html.H4("🏷️ Interactive Tagging", className="mb-0 text-primary"),
                     html.Div(id='tagging-progress', className="mt-2")
                 ])
             ])
-        ], className="mb-4", style={'background': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 'color': 'white'}),
+        ], className="mb-4", style={'background-color': '#f8f9fa', 'border': '2px solid #007bff'}),
         
         dbc.Row([
             # Left Panel: Workflow Steps
@@ -127,13 +200,8 @@ def create_interactive_tagging_layout():
                         html.H5("🔸 STEP 1: Select Vendors", className="mb-0 text-primary")
                     ]),
                     dbc.CardBody([
-                        html.P("Choose vendors to see their transactions", className="text-muted mb-3"),
-                        dcc.Dropdown(
-                            id='vendor-select',
-                            multi=True,
-                            placeholder="🔍 Search and select vendors...",
-                            style={'marginBottom': '15px'}
-                        ),
+                        html.P("Click on vendors to select them", className="text-muted mb-3"),
+                        html.Div(id='vendor-cards-container', style={'maxHeight': '250px', 'overflowY': 'auto'})
                     ])
                 ], className="mb-3"),
                 

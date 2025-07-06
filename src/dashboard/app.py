@@ -10,10 +10,12 @@ from .callbacks import register_callbacks
 
 def create_app():
     """Create and configure the Dash application"""
-    app = dash.Dash(__name__, external_stylesheets=[
-        dbc.themes.BOOTSTRAP,
-        "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
-    ])
+    app = dash.Dash(__name__, 
+                    external_stylesheets=[
+                        dbc.themes.BOOTSTRAP,
+                        "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+                    ],
+                    suppress_callback_exceptions=True)
     
     # Custom CSS for enhanced styling
     app.index_string = '''
