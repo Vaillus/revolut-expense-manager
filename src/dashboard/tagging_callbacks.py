@@ -812,13 +812,15 @@ def register_tagging_callbacks(app):
             return f"💾 Save Progress ({progress_info['tagged_transactions']} tagged)", "primary"
 
     @app.callback(
-        Output('tagging-feedback', 'children', allow_duplicate=True),
+        [Output('tagging-feedback', 'children', allow_duplicate=True),
+         Output('refresh-visualizations-store', 'data', allow_duplicate=True)],
         [Input('save-file-btn', 'n_clicks')],
         [State('dataframe-store', 'data'),
-         State('current-filename-store', 'data')],
+         State('current-filename-store', 'data'),
+         State('refresh-visualizations-store', 'data')],
         prevent_initial_call=True
     )
-    def save_tagged_file_callback(n_clicks, df_data, filename):
+    def save_tagged_file_callback(n_clicks, df_data, filename, current_refresh):
         """Save the tagged file to processed directory"""
         if not n_clicks or not df_data or not filename:
             raise PreventUpdate
@@ -834,20 +836,22 @@ def register_tagging_callbacks(app):
                 "⚠️ No transactions have been tagged yet. Please tag some transactions before saving.",
                 color="warning",
                 dismissable=True
-            )
+            ), current_refresh
         
         # Save the file
         success = save_tagged_file(df, filename)
         
         if success:
+            # Increment refresh counter to trigger visualization updates
+            new_refresh = current_refresh + 1
             return dbc.Alert([
                 html.H5("🎉 File saved successfully!", className="mb-2"),
                 html.P(f"📁 Saved to: data/processed/{filename}"),
                 html.P(f"📊 Progress: {progress_info['tagged_transactions']}/{progress_info['total_transactions']} transactions tagged ({progress_info['progress_percentage']:.1f}%)")
-            ], color="success", dismissable=True)
+            ], color="success", dismissable=True), new_refresh
         else:
             return dbc.Alert(
                 "❌ Error saving file. Please check the file permissions and try again.",
                 color="danger",
                 dismissable=True
-            ) 
+            ), current_refresh 

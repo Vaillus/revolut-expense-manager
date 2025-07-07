@@ -7,43 +7,45 @@ import pandas as pd
 
 from ..utilities.data_loader import (
     load_config, load_all_processed_data, get_main_category,
-    get_subtags_for_category, get_monthly_trend
+    get_subtags_for_category, get_monthly_trend, get_latest_processed_file, load_month_data
 )
 
 
 def register_categories_callbacks(app):
     """Register category analysis callbacks"""
-    
-    # Load data once when callbacks are registered
-    try:
-        main_categories = load_config('main_categories.json')
-        all_data = load_all_processed_data()
-        
-        # Apply main categories to all data
-        if not all_data.empty:
-            all_data['main_category'] = all_data['parsed_tags'].apply(
-                lambda tags: get_main_category(tags, main_categories)
-            )
-        
-        # Get current month data (most recent)
-        current_month_data = pd.DataFrame()
-        if not all_data.empty:
-            latest_month = all_data['month'].max()
-            current_month_data = all_data[all_data['month'] == latest_month].copy()
-            
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        main_categories = []
-        all_data = pd.DataFrame()
-        current_month_data = pd.DataFrame()
 
     @app.callback(
         Output('pie-chart', 'figure'),
-        Input('main-tabs', 'value')
+        [Input('main-tabs', 'value'),
+         Input('refresh-visualizations-store', 'data')]
     )
-    def create_pie_chart(active_tab):
+    def create_pie_chart(active_tab, refresh_trigger):
         """Create pie chart for category analysis"""
-        if active_tab != 'categories-tab' or current_month_data.empty:
+        if active_tab != 'categories-tab':
+            return {}
+        
+        # Load latest processed file dynamically
+        try:
+            latest_file = get_latest_processed_file()
+            if not latest_file:
+                return {}
+                
+            main_categories = load_config('main_categories.json')
+            current_month_data = load_month_data(latest_file)
+            
+            # Apply main categories
+            current_month_data['main_category'] = current_month_data['parsed_tags'].apply(
+                lambda tags: get_main_category(tags, main_categories)
+            )
+            
+            # Extract month from filename for display
+            month = latest_file.replace('.csv', '')
+            
+        except Exception as e:
+            print(f"Error loading latest data: {e}")
+            return {}
+        
+        if current_month_data.empty:
             return {}
         
         # Group by category and calculate sums
@@ -61,7 +63,7 @@ def register_categories_callbacks(app):
         )])
         
         fig.update_layout(
-            title=f"Expenses by Category ({current_month_data['month'].iloc[0]})",
+            title=f"Expenses by Category ({month})",
             showlegend=True,
             legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.05),
             margin=dict(t=40, b=40, l=40, r=40)
@@ -74,11 +76,43 @@ def register_categories_callbacks(app):
          Output('monthly-trend', 'figure'),
          Output('category-info', 'children')],
         [Input('pie-chart', 'clickData'),
-         Input('main-tabs', 'value')]
+         Input('main-tabs', 'value'),
+         Input('refresh-visualizations-store', 'data')]
     )
-    def update_secondary_charts(clickData, active_tab):
+    def update_secondary_charts(clickData, active_tab, refresh_trigger):
         """Update secondary charts when category is clicked"""
-        if active_tab != 'categories-tab' or current_month_data.empty:
+        if active_tab != 'categories-tab':
+            return {}, {}, []
+        
+        # Load data dynamically
+        try:
+            latest_file = get_latest_processed_file()
+            if not latest_file:
+                return {}, {}, []
+                
+            main_categories = load_config('main_categories.json')
+            current_month_data = load_month_data(latest_file)
+            
+            # Apply main categories
+            current_month_data['main_category'] = current_month_data['parsed_tags'].apply(
+                lambda tags: get_main_category(tags, main_categories)
+            )
+            
+            # Extract month from filename for display
+            month = latest_file.replace('.csv', '')
+            
+            # Load all data for trend analysis
+            all_data = load_all_processed_data()
+            if not all_data.empty:
+                all_data['main_category'] = all_data['parsed_tags'].apply(
+                    lambda tags: get_main_category(tags, main_categories)
+                )
+                
+        except Exception as e:
+            print(f"Error loading data for secondary charts: {e}")
+            return {}, {}, []
+        
+        if current_month_data.empty:
             return {}, {}, []
         
         if not clickData:
@@ -122,7 +156,7 @@ def register_categories_callbacks(app):
             )])
             
             bar_fig.update_layout(
-                title=f"Subtags of '{category}' ({current_month_data['month'].iloc[0]})",
+                title=f"Subtags of '{category}' ({month})",
                 xaxis_title="Subtags",
                 yaxis_title="Amount (€)",
                 margin=dict(t=40, b=40, l=40, r=40),
@@ -172,7 +206,7 @@ def register_categories_callbacks(app):
         
         info_components = [
             html.H4(f"📊 Details - {category}", className="text-primary"),
-            html.P(f"💰 Total amount ({current_month_data['month'].iloc[0]}): {total_current:.2f}€"),
+            html.P(f"💰 Total amount ({month}): {total_current:.2f}€"),
             html.P(f"📝 Number of transactions: {nb_transactions}"),
         ]
         

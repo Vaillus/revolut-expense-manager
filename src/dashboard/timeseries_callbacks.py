@@ -13,30 +13,32 @@ from ..utilities.data_loader import (
 
 def register_timeseries_callbacks(app):
     """Register time series analysis callbacks"""
-    
-    # Load data once when callbacks are registered
-    try:
-        main_categories = load_config('main_categories.json')
-        all_data = load_all_processed_data()
-        
-        # Apply main categories to all data
-        if not all_data.empty:
-            all_data['main_category'] = all_data['parsed_tags'].apply(
-                lambda tags: get_main_category(tags, main_categories)
-            )
-            
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        main_categories = []
-        all_data = pd.DataFrame()
 
     @app.callback(
         Output('timeseries-stacked-area', 'figure'),
-        Input('main-tabs', 'value')
+        [Input('main-tabs', 'value'),
+         Input('refresh-visualizations-store', 'data')]
     )
-    def update_timeseries_stacked_area(active_tab):
+    def update_timeseries_stacked_area(active_tab, refresh_trigger):
         """Update the main timeseries stacked area chart"""
-        if active_tab != 'timeseries-tab' or all_data.empty:
+        if active_tab != 'timeseries-tab':
+            return {}
+        
+        # Load all processed data dynamically
+        try:
+            main_categories = load_config('main_categories.json')
+            all_data = load_all_processed_data()
+            
+            # Apply main categories to all data
+            if not all_data.empty:
+                all_data['main_category'] = all_data['parsed_tags'].apply(
+                    lambda tags: get_main_category(tags, main_categories)
+                )
+            else:
+                return {}
+                
+        except Exception as e:
+            print(f"Error loading timeseries data: {e}")
             return {}
             
         exceptional, regular, monthly_totals = prepare_timeseries_data(all_data)
@@ -102,11 +104,29 @@ def register_timeseries_callbacks(app):
 
     @app.callback(
         Output('timeseries-stats', 'children'),
-        Input('main-tabs', 'value')
+        [Input('main-tabs', 'value'),
+         Input('refresh-visualizations-store', 'data')]
     )
-    def update_timeseries_stats(active_tab):
+    def update_timeseries_stats(active_tab, refresh_trigger):
         """Update timeseries statistics panel"""
-        if active_tab != 'timeseries-tab' or all_data.empty:
+        if active_tab != 'timeseries-tab':
+            return []
+        
+        # Load all processed data dynamically
+        try:
+            main_categories = load_config('main_categories.json')
+            all_data = load_all_processed_data()
+            
+            # Apply main categories to all data
+            if not all_data.empty:
+                all_data['main_category'] = all_data['parsed_tags'].apply(
+                    lambda tags: get_main_category(tags, main_categories)
+                )
+            else:
+                return []
+                
+        except Exception as e:
+            print(f"Error loading timeseries stats data: {e}")
             return []
             
         # Calculate statistics

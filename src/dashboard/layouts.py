@@ -98,7 +98,10 @@ def create_main_layout():
         ]),
         
         # Dynamic content based on selected tab
-        html.Div(id='tab-content')
+        html.Div(id='tab-content'),
+        
+        # Global stores accessible to all callbacks
+        dcc.Store(id='refresh-visualizations-store', data=0),
     ])
 
 

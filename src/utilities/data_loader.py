@@ -47,6 +47,37 @@ def load_month_data(filename: str) -> pd.DataFrame:
     return expenses_df
 
 
+def get_latest_processed_file() -> Optional[str]:
+    """Get the filename of the most recent processed file based on filename date"""
+    from .paths import get_processed_data_dir
+    processed_dir = get_processed_data_dir()
+    
+    if not processed_dir.exists():
+        return None
+    
+    csv_files = list(processed_dir.glob("*.csv"))
+    
+    if not csv_files:
+        return None
+    
+    # Sort by filename (assuming format: YYYY-MM.csv)
+    csv_files.sort(key=lambda x: x.stem, reverse=True)
+    
+    return csv_files[0].name
+
+
+def get_all_processed_files() -> List[str]:
+    """Get all processed file names"""
+    from .paths import get_processed_data_dir
+    processed_dir = get_processed_data_dir()
+    
+    if not processed_dir.exists():
+        return []
+    
+    csv_files = list(processed_dir.glob("*.csv"))
+    return [f.name for f in csv_files]
+
+
 def load_all_processed_data() -> pd.DataFrame:
     """Load all processed data files and combine them"""
     from .paths import get_processed_data_dir
