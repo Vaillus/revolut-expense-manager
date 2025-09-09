@@ -10,6 +10,39 @@ from pathlib import Path
 from .paths import get_config_file, get_processed_file
 
 
+def _detect_and_map_columns(columns: List[str]) -> Dict[str, str]:
+    """
+    Detect column language and map French/English column names to standard English names
+    Returns a mapping dictionary for renaming columns
+    """
+    # Mapping from French/English variants to standard English names
+    column_mappings = {
+        # French to English
+        'Date de début': 'Started Date',
+        'Montant': 'Amount',
+        'Devise': 'Currency',
+        'État': 'State',
+        'Date de fin': 'Completed Date',
+        'Produit': 'Product',
+        # English variants (in case of different formats)
+        'Started Date': 'Started Date',  # Keep as is
+        'Amount': 'Amount',  # Keep as is
+        'Currency': 'Currency',  # Keep as is
+        'State': 'State',  # Keep as is
+        'Type': 'Type',  # Keep as is
+        'Description': 'Description',  # Keep as is
+    }
+    
+    # Create mapping for existing columns
+    mapping = {}
+    for col in columns:
+        if col in column_mappings:
+            mapping[col] = column_mappings[col]
+        # If column not in mapping, keep original name
+    
+    return mapping
+
+
 def load_config(filename: str) -> Dict[str, Any]:
     """Load a configuration file"""
     config_path = get_config_file(filename)
@@ -303,7 +336,13 @@ def preprocess_raw_file(filename: str) -> tuple:
     file_path = get_raw_file(filename)
     df = pd.read_csv(file_path)
     
-    # Step 1: Select and rename columns
+    # Step 1: Detect language and map columns
+    column_mapping = _detect_and_map_columns(df.columns)
+    
+    # Rename columns to English standard
+    df = df.rename(columns=column_mapping)
+    
+    # Select required columns (now all in English)
     required_columns = ['Type', 'Started Date', 'Description', 'Amount', 'Currency', 'State']
     df = df[required_columns].copy()
     
