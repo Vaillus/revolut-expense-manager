@@ -13,7 +13,7 @@ from ..utilities.data_loader import (
     get_raw_files, preprocess_raw_file, load_tagging_configs,
     get_untagged_vendors_from_df, get_suggested_tags_for_vendors,
     get_transaction_details_for_vendors, apply_tags_to_vendors,
-    apply_tags_to_transaction, get_daily_context_for_transaction,
+    apply_tags_to_transaction, apply_tags_to_transactions, get_daily_context_for_transaction,
     get_tagging_progress, save_tagged_file, update_configurations_on_disk,
     restore_dataframe_from_store, prepare_dataframe_for_store
 )
@@ -398,55 +398,46 @@ def register_tagging_callbacks(app):
          State({'type': 'transaction-card', 'index': ALL}, 'id')],
         prevent_initial_call=True
     )
-    def handle_transaction_selection(n_clicks_list, selected_transaction, card_ids):
-        """Handle transaction card selection"""
+    def handle_transaction_selection(n_clicks_list, selected_transactions, card_ids):
+        """Handle transaction card selection for multi-selection"""
         if not ctx.triggered or not any(n_clicks > 0 for n_clicks in n_clicks_list if n_clicks is not None):
             raise PreventUpdate
         
-        # Find which card was clicked
         triggered_id = ctx.triggered[0]['prop_id']
         
-        # Extract transaction ID from the triggered prop_id
         if '"type":"transaction-card"' in triggered_id:
-            # Parse the ID from the triggered prop_id
             import re
             match = re.search(r'"index":"([^"]*)"', triggered_id)
             if match:
                 clicked_transaction_id = match.group(1)
                 
+                if selected_transactions is None:
+                    selected_transactions = []
+                
                 # Toggle selection
-                if selected_transaction == clicked_transaction_id:
-                    # Deselect if already selected
-                    new_selected = None
+                if clicked_transaction_id in selected_transactions:
+                    selected_transactions.remove(clicked_transaction_id)
                 else:
-                    # Select the clicked transaction
-                    new_selected = clicked_transaction_id
+                    selected_transactions.append(clicked_transaction_id)
                 
                 # Update card styles
                 card_styles = []
                 for card_id in card_ids:
                     transaction_id = card_id['index']
-                    if transaction_id == new_selected:
-                        # Selected style
+                    if transaction_id in selected_transactions:
                         style = {
-                            'border': '2px solid #007bff',
-                            'border-radius': '8px',
-                            'background-color': '#e7f3ff',
-                            'transition': 'all 0.2s ease',
-                            'cursor': 'pointer',
-                            'transform': 'scale(1.02)'
+                            'border': '2px solid #007bff', 'border-radius': '8px',
+                            'background-color': '#e7f3ff', 'transition': 'all 0.2s ease',
+                            'cursor': 'pointer', 'transform': 'scale(1.02)'
                         }
                     else:
-                        # Default style
                         style = {
-                            'border': '1px solid #dee2e6',
-                            'border-radius': '8px',
-                            'transition': 'all 0.2s ease',
-                            'cursor': 'pointer'
+                            'border': '1px solid #dee2e6', 'border-radius': '8px',
+                            'transition': 'all 0.2s ease', 'cursor': 'pointer'
                         }
                     card_styles.append(style)
                 
-                return new_selected, card_styles
+                return selected_transactions, card_styles
         
         raise PreventUpdate
 
@@ -491,223 +482,101 @@ def register_tagging_callbacks(app):
          Input('selected-vendors-store', 'data'),
          Input('tags-config-store', 'data'),
          Input('vendor-tags-config-store', 'data'),
-         Input('selected-tags-store', 'data')]
+         Input('selected-tags-store', 'data')],
+        [State('dataframe-store', 'data')]  # Add dataframe as state
     )
-    def update_tag_cloud(selected_transaction, selected_vendors, tags_config, vendor_tags_config, selected_tags):
+    def update_tag_cloud(selected_transactions, selected_vendors, tags_config, vendor_tags_config, selected_tags, df_data):
         """Update tag cloud based on current selection"""
         if not tags_config or not vendor_tags_config:
             return [html.P("Loading tags...", className="text-muted")]
         
-        # Get appropriate tags based on selection
-        if selected_transaction or selected_vendors:
-            # Get suggested tags based on vendors
-            vendors = []
-            if selected_transaction:
-                # Individual transaction mode - we need the dataframe to extract vendor
-                # For now, show all tags - this will be improved in the main callback
-                vendors = []
-            elif selected_vendors:
-                vendors = selected_vendors
-            
-            from ..utilities.data_loader import get_suggested_tags_for_vendors
-            suggested_tags = get_suggested_tags_for_vendors(vendors, tags_config, vendor_tags_config)
-        else:
-            # No selection - show all tags sorted by frequency
-            all_tags = sorted(tags_config.items(), key=lambda x: x[1], reverse=True)
-            suggested_tags = [{'label': tag, 'value': tag} for tag, _ in all_tags]
+        # Determine which vendors to use for suggestions
+        vendors_for_suggestions = []
+        if selected_transactions and df_data:
+            # Mode 1: One or more transactions are selected
+            df = restore_dataframe_from_store(df_data)
+            vendors = set()
+            for trans_id in selected_transactions:
+                try:
+                    trans_index = int(trans_id.split('_')[1])
+                    if trans_index in df.index:
+                        vendor = df.loc[trans_index, 'Description']
+                        vendors.add(vendor)
+                except (ValueError, IndexError, KeyError):
+                    continue
+            vendors_for_suggestions = list(vendors)
+        elif selected_vendors:
+            # Mode 2: One or more vendors are selected
+            vendors_for_suggestions = selected_vendors
+
+        # Get suggested tags based on the determined vendors
+        from ..utilities.data_loader import get_suggested_tags_for_vendors
+        suggested_tags = get_suggested_tags_for_vendors(
+            vendors_for_suggestions, tags_config, vendor_tags_config
+        )
         
         return [create_tag_cloud(suggested_tags, selected_tags or [])]
 
     @app.callback(
         Output('tagging-panel-content', 'children'),
         [Input('selected-transaction-store', 'data'),
-         Input('selected-vendors-store', 'data'),
-         Input('dataframe-store', 'data'),
-         Input('tags-config-store', 'data'),
-         Input('vendor-tags-config-store', 'data')]
+         Input('selected-vendors-store', 'data')]
     )
-    def update_tagging_panel(selected_transaction, selected_vendors, df_data, tags_config, vendor_tags_config):
-        """Update tagging panel content based on selection mode"""
-        if not df_data:
-            return []
-        
-        # Restore DataFrame from store
-        df = restore_dataframe_from_store(df_data)
-        
-        # Determine mode and create appropriate interface
-        if selected_transaction:
-            # Individual transaction tagging mode
-            try:
-                # Extract df_index from transaction_id
-                df_index = int(selected_transaction.split('_')[1])
-                transaction = df.loc[df_index]
-                
-                # Get suggested tags for this vendor
-                vendor_name = transaction['Description']
-                suggested_tags = get_suggested_tags_for_vendors([vendor_name], tags_config, vendor_tags_config)
-                
-                return html.Div([
-                    html.H5("🎯 Tag Individual Transaction", className="text-primary mb-3"),
-                    html.Div([
-                        html.P(f"🏪 Vendor: {vendor_name}", className="mb-1"),
-                        html.P(f"💰 Amount: {transaction['amount_abs']:.2f}€", className="mb-1"),
-                        html.P(f"📅 Date: {pd.to_datetime(transaction['Date']).strftime('%Y-%m-%d')}", className="mb-3")
-                    ], className="alert alert-info"),
-                    
-                    html.Div([
-                        html.Label("🏷️ Select Tags:", className="form-label"),
-                        html.Div(id='tag-cloud-container', children=[
-                            create_tag_cloud(suggested_tags, [])
-                        ])
-                    ], className="mb-3"),
-                    
-                    html.Div([
-                        html.Label("➕ Add New Tags:", className="form-label"),
-                        dcc.Input(
-                            id='new-tags-input',
-                            type='text',
-                            placeholder='Enter new tags (comma-separated)',
-                            className='form-control'
-                        )
-                    ], className="mb-3"),
-                    
-                    html.Div([
-                        dbc.Button(
-                            "🏷️ Tag Transaction",
-                            id='apply-tags-btn',
-                            color='primary',
-                            className='me-2'
-                        ),
-                        dbc.Button(
-                            "🔄 Clear Selection",
-                            id='clear-selection-btn',
-                            color='secondary',
-                            outline=True
-                        )
-                    ], className="d-flex gap-2")
-                ])
-            except (ValueError, KeyError, IndexError):
-                return html.Div([
-                    html.P("⚠️ Error: Invalid transaction selected", className="text-danger")
-                ])
-        
-        elif selected_vendors:
-            # Vendor-based tagging mode
-            suggested_tags = get_suggested_tags_for_vendors(selected_vendors, tags_config, vendor_tags_config)
-            
+    def update_tagging_panel(selected_transactions, selected_vendors):
+        """Update tagging panel based on selection."""
+        # This panel is active if vendors or transactions are selected
+        if selected_vendors or selected_transactions:
             return html.Div([
-                html.H5("🏪 Tag All Vendor Transactions", className="text-primary mb-3"),
-                html.Div([
-                    html.P(f"📊 Selected Vendors: {len(selected_vendors)}", className="mb-1"),
-                    html.Ul([html.Li(vendor) for vendor in selected_vendors], className="mb-2")
-                ], className="alert alert-info"),
-                
-                html.Div([
-                    html.Label("🏷️ Select Tags:", className="form-label"),
-                    html.Div(id='tag-cloud-container', children=[
-                        create_tag_cloud(suggested_tags, [])
-                    ])
-                ], className="mb-3"),
-                
-                html.Div([
-                    html.Label("➕ Add New Tags:", className="form-label"),
-                    dcc.Input(
-                        id='new-tags-input',
-                        type='text',
-                        placeholder='Enter new tags (comma-separated)',
-                        className='form-control'
-                    )
-                ], className="mb-3"),
-                
-                dbc.Button(
-                    "🏷️ Tag All Transactions",
-                    id='apply-tags-btn',
-                    color='primary',
-                    size='lg'
-                )
+                html.Div(id='tag-cloud-container', className="mb-3"),
+                dbc.Input(id='new-tags-input', placeholder='Enter new tags, comma-separated...', className="mb-3"),
+                dbc.Button("Apply Tags", id='apply-tags-btn', color="primary", className="w-100")
             ])
         
-        else:
-            # No selection mode
-            return html.Div([
-                html.H5("🎯 Choose Tagging Mode", className="text-primary mb-3"),
-                html.Div([
-                    html.P("👆 Select vendors or click on individual transactions to start tagging", 
-                           className="text-muted mb-2"),
-                    html.Hr(),
-                    html.H6("🏪 Vendor Mode:", className="text-secondary"),
-                    html.P("• Select one or more vendors to tag ALL their transactions at once", 
-                           className="text-muted mb-2"),
-                    html.H6("🎯 Individual Mode:", className="text-secondary"),
-                    html.P("• Click on a specific transaction card to tag just that transaction", 
-                           className="text-muted mb-2")
-                ], className="alert alert-light")
-            ])
+        # Default view when nothing is selected
+        return html.Div([
+            html.I(className="fas fa-hand-pointer fa-2x text-muted"),
+            html.P("Select vendors or transactions to start tagging", className="text-muted mt-2 mb-0")
+        ], className="text-center py-4")
+
 
     @app.callback(
         Output('daily-context', 'children'),
         [Input('selected-transaction-store', 'data'),
          Input('dataframe-store', 'data')]
     )
-    def update_daily_context(selected_transaction, df_data):
-        """Update daily context display when a transaction is selected"""
-        if not selected_transaction or not df_data:
-            return []
-        
-        # Restore DataFrame from store
-        df = restore_dataframe_from_store(df_data)
-        
-        # Get daily context
-        daily_context = get_daily_context_for_transaction(df, selected_transaction)
-        
-        if not daily_context['transactions']:
-            return []
-        
-        summary = daily_context['summary']
-        
-        # Create transaction cards for the day
-        transaction_cards = []
-        for transaction in daily_context['transactions']:
-            # Determine card styling based on status
-            if transaction['is_selected']:
-                card_class = "card mb-2 border-primary"
-                card_style = {'background-color': '#e7f3ff'}
-                prefix = "👆 "
-            elif transaction['has_tags']:
-                card_class = "card mb-2 border-success"
-                card_style = {'background-color': '#e8f5e8'}
-                prefix = "✅ "
-            else:
-                card_class = "card mb-2 border-warning"
-                card_style = {'background-color': '#fff3cd'}
-                prefix = "⏳ "
+    def update_daily_context(selected_transactions, df_data):
+        """Update daily context display."""
+        # Daily context is only shown for a single selected transaction
+        if df_data and selected_transactions and len(selected_transactions) == 1:
+            df = restore_dataframe_from_store(df_data)
+            transaction_id = selected_transactions[0]  # Get the single ID from the list
+            daily_context_data = get_daily_context_for_transaction(df, transaction_id)
             
-            card = html.Div([
-                html.Div([
-                    html.H6(f"{prefix}{transaction['vendor']}", className="mb-1"),
-                    html.P(f"💰 {transaction['display_amount']}", className="mb-1"),
-                    html.P(f"🕐 {transaction['time']}", className="mb-1 text-muted"),
-                    html.P(f"🏷️ {transaction['tags_display']}", className="mb-0 text-muted")
-                ], className="card-body p-2")
-            ], className=card_class, style=card_style)
+            if not daily_context_data['transactions']:
+                return html.P("No other transactions on this day.", className="text-muted")
             
-            transaction_cards.append(card)
+            # Create a list of transactions for display
+            transaction_list = []
+            for trans in daily_context_data['transactions']:
+                style = {'font-weight': 'bold', 'color': '#007bff'} if trans['is_selected'] else {}
+                transaction_list.append(html.Div([
+                    html.Span(f"{trans['time']} - {trans['vendor']} - {trans['display_amount']}", style=style),
+                    dbc.Badge(trans['tags_display'], color="info", pill=True, className="ms-2") if trans['has_tags'] else None
+                ], className="d-flex justify-content-between align-items-center mb-1"))
+
+            return html.Div([
+                html.H6(f"Transactions for {daily_context_data['summary']['date_display']}", className="mb-2"),
+                html.P(f"Total: {daily_context_data['summary']['total_amount']:.2f}€ over {daily_context_data['summary']['total_transactions']} transactions", className="text-muted small"),
+                *transaction_list
+            ])
         
-        return html.Div([
-            html.H6(f"📅 Daily Context - {summary['date_display']}", className="text-primary mb-3"),
-            html.Div([
-                html.P(f"📊 Total: {summary['total_amount']:.2f}€ • {summary['total_transactions']} transactions", 
-                       className="mb-1"),
-                html.P(f"✅ Tagged: {summary['tagged_transactions']} • ⏳ Remaining: {summary['untagged_transactions']}", 
-                       className="mb-3 text-muted")
-            ], className="alert alert-info"),
-            html.Div(transaction_cards, className="daily-context-container")
-        ])
+        # Default view
+        return html.P("Select a single transaction to see daily context", className="text-muted mb-0")
 
     @app.callback(
         [
             Output('dataframe-store', 'data', allow_duplicate=True),
-            Output('tagging-feedback', 'children'),
+            Output('tagging-feedback', 'children', allow_duplicate=True),
             Output('selected-vendors-store', 'data', allow_duplicate=True),
             Output('selected-tags-store', 'data', allow_duplicate=True),
             Output('new-tags-input', 'value'),
@@ -728,98 +597,70 @@ def register_tagging_callbacks(app):
         ],
         prevent_initial_call=True
     )
-    def apply_tags(n_clicks, df_data, selected_vendors, selected_tags, new_tags_input, tags_config, vendor_tags_config, selected_transaction):
-        """Apply tags to selected vendors or individual transaction"""
-        if not n_clicks or not df_data:
-            raise PreventUpdate
+    def apply_tags(n_clicks, df_data, selected_vendors, selected_tags, new_tags_input, tags_config, vendor_tags_config, selected_transactions):
         
-        # Prevent accidental triggering from UI updates
-        if not ctx.triggered:
+        if not n_clicks:
             raise PreventUpdate
-        
-        # Check if the callback was triggered by a real button click
-        triggered_id = ctx.triggered[0]['prop_id']
-        if 'apply-tags-btn' not in triggered_id:
-            raise PreventUpdate
-        
-        # Restore DataFrame from store
+            
+        from dash import no_update
         df = restore_dataframe_from_store(df_data)
         
-        # Process new tags input
+        # Prepare tags
         new_tags = []
-        if new_tags_input and new_tags_input.strip():
+        if new_tags_input:
             new_tags = [tag.strip() for tag in new_tags_input.split(',') if tag.strip()]
         
-        # Apply tags based on mode
-        if selected_transaction:
-            # Individual transaction mode
-            df_updated, affected_count = apply_tags_to_transaction(
-                df, selected_transaction, selected_tags or [], new_tags
+        all_tags = (selected_tags or []) + new_tags
+        if not all_tags:
+            return no_update, dbc.Alert("No tags selected or entered.", color="warning"), no_update, no_update, "", no_update, no_update
+
+        # Determine mode: multi-transaction or vendor-based
+        if selected_transactions:
+            # --- Multi-transaction Tagging ---
+            df_updated, affected_count, tagged_vendors = apply_tags_to_transactions(
+                df, selected_transactions, all_tags
             )
             
             if affected_count > 0:
-                # Extract vendor name for configuration update
-                df_index = int(selected_transaction.split('_')[1])
-                vendor_name = df.loc[df_index, 'Description']
+                # --- DEBUG: Print tagged transactions ---
+                print("\n--- Transactions Tagged (Multi-Transaction Mode) ---")
+                tagged_indices = [int(tid.split('_')[1]) for tid in selected_transactions]
+                print(df_updated.loc[df_updated.index.isin(tagged_indices)][['Date', 'Description', 'Amount', 'tags']])
+                print("--------------------------------------------------\n")
                 
-                # Update configurations on disk
-                all_tags = (selected_tags or []) + new_tags
-                updated_tags, updated_vendor_tags = update_configurations_on_disk(all_tags, [vendor_name])
-                
-                feedback = dbc.Alert(
-                    f"✅ Successfully tagged 1 transaction with {len(all_tags)} tag(s)",
-                    color="success",
-                    dismissable=True
-                )
-                
-                # Clear selection after successful tagging
-                selected_transaction = None
+                update_configurations_on_disk(all_tags, list(tagged_vendors))
+                feedback = dbc.Alert(f"✅ Successfully tagged {affected_count} transaction(s).", color="success")
+                # Clear selections after tagging. Also return a value for the save button.
+                return df_updated.to_dict('records'), feedback, no_update, [], "", no_update, []
             else:
-                feedback = dbc.Alert(
-                    "⚠️ No transactions were tagged. Transaction may already be tagged.",
-                    color="warning",
-                    dismissable=True
-                )
+                feedback = dbc.Alert("⚠️ No transactions were tagged (they may already be tagged).", color="warning")
+                return no_update, feedback, no_update, no_update, no_update, no_update, no_update
         
         elif selected_vendors:
-            # Vendor-based mode
-            df_updated, affected_count = apply_tags_to_vendors(
-                df, selected_vendors, selected_tags or [], new_tags
-            )
+            # --- Vendor-based Tagging ---
+            df_updated, affected_count = apply_tags_to_vendors(df, selected_vendors, selected_tags or [], new_tags)
             
             if affected_count > 0:
-                # Update configurations on disk
-                all_tags = (selected_tags or []) + new_tags
-                updated_tags, updated_vendor_tags = update_configurations_on_disk(all_tags, selected_vendors)
-                
-                feedback = dbc.Alert(
-                    f"✅ Successfully tagged {affected_count} transaction(s) with {len(all_tags)} tag(s)",
-                    color="success",
-                    dismissable=True
-                )
+                # --- DEBUG: Print tagged transactions ---
+                print(f"\n--- Transactions Tagged (Vendor Mode: {', '.join(selected_vendors)}) ---")
+                mask_untagged_before = df["tags"].apply(lambda tags: len(tags) == 0)
+                mask_vendors = df["Description"].isin(selected_vendors)
+                tagged_indices = df[mask_untagged_before & mask_vendors].index
+                print(df_updated.loc[tagged_indices][['Date', 'Description', 'Amount', 'tags']])
+                print("--------------------------------------------------\n")
+
+                update_configurations_on_disk(all_tags, selected_vendors)
+                feedback = dbc.Alert(f"✅ Successfully tagged {affected_count} transactions for {len(selected_vendors)} vendor(s).", color="success")
+                # Clear selections and vendors after tagging
+                return df_updated.to_dict('records'), feedback, [], [], "", [], []
             else:
-                feedback = dbc.Alert(
-                    "⚠️ No transactions were tagged. They may already be tagged.",
-                    color="warning",
-                    dismissable=True
-                )
+                feedback = dbc.Alert("⚠️ No untagged transactions found for the selected vendor(s).", color="warning")
         
         else:
-            feedback = dbc.Alert(
-                "⚠️ Please select vendors or a transaction before applying tags",
-                color="warning",
-                dismissable=True
-            )
-            df_updated = df
-        
-        # Convert updated DataFrame back to dict for storage
-        df_dict = df_updated.to_dict('records')
-        
-        # Check if save button should be enabled
-        progress_info = get_tagging_progress(df_updated)
-        save_disabled = progress_info['tagged_transactions'] == 0
-        
-        return df_dict, feedback, [], [], '', save_disabled, selected_transaction
+            feedback = dbc.Alert("Select vendors or transactions first.", color="info")
+
+        # Fallback return for cases that don't update the dataframe
+        return no_update, feedback, no_update, no_update, no_update, no_update, no_update
 
     @app.callback(
         [Output('save-file-btn', 'children'),
@@ -899,24 +740,26 @@ def register_tagging_callbacks(app):
          State({'type': 'delete-transaction-btn', 'index': ALL}, 'id')],
         prevent_initial_call=True
     )
-    def toggle_action_buttons_visibility(selected_transaction, edit_btn_ids, delete_btn_ids):
+    def toggle_action_buttons_visibility(selected_transactions, edit_btn_ids, delete_btn_ids):
         """Show/hide action buttons based on transaction selection"""
+        # Buttons are only shown when exactly one transaction is selected
+        show_buttons = selected_transactions is not None and len(selected_transactions) == 1
+        
         edit_styles = []
         delete_styles = []
         
+        single_selected_id = selected_transactions[0] if show_buttons else None
+        
         for btn_id in edit_btn_ids:
-            transaction_id = btn_id['index']
-            if selected_transaction == transaction_id:
-                # Montrer les boutons pour la transaction sélectionnée
+            # Show button only if it corresponds to the single selected transaction
+            if show_buttons and btn_id['index'] == single_selected_id:
                 style = {'display': 'inline-block'}
             else:
-                # Cacher les boutons pour les autres transactions
                 style = {'display': 'none'}
             edit_styles.append(style)
         
         for btn_id in delete_btn_ids:
-            transaction_id = btn_id['index']
-            if selected_transaction == transaction_id:
+            if show_buttons and btn_id['index'] == single_selected_id:
                 style = {'display': 'inline-block'}
             else:
                 style = {'display': 'none'}

@@ -545,24 +545,26 @@ def get_transaction_details_for_vendors(df: pd.DataFrame, selected_vendors: List
 
 def apply_tags_to_vendors(df: pd.DataFrame, selected_vendors: List[str], selected_tags: List[str], new_tags: List[str]) -> tuple:
     """Apply tags to selected vendors in the DataFrame"""
-    if not selected_vendors or (not selected_tags and not new_tags):
+    if not selected_vendors or (not (selected_tags or []) and not new_tags):
         return df, 0
     
-    # Combine selected tags and new tags
-    all_tags = list(set(selected_tags + new_tags))
+    all_tags = list(set((selected_tags or []) + new_tags))
     
-    # Filter untagged transactions for selected vendors
+    # Find indices of untagged transactions for the selected vendors
     mask_untagged = df["tags"].apply(lambda tags: len(tags) == 0)
     mask_vendors = df["Description"].isin(selected_vendors)
-    mask = mask_untagged & mask_vendors
+    indices_to_update = df[mask_untagged & mask_vendors].index
     
-    # Apply tags to matching transactions
-    df.loc[mask, "tags"] = df.loc[mask, "tags"].apply(lambda old_tags: list(set(old_tags + all_tags)))
-    
-    # Count affected transactions
-    affected_count = mask.sum()
-    
-    return df, affected_count
+    affected_count = len(indices_to_update)
+
+    if affected_count > 0:
+        df_copy = df.copy()
+        # Use a loop with .at for safe, item-by-item assignment
+        for idx in indices_to_update:
+            df_copy.at[idx, 'tags'] = all_tags
+        return df_copy, affected_count
+
+    return df, 0
 
 
 def apply_tags_to_transaction(df: pd.DataFrame, transaction_id: str, selected_tags: List[str], new_tags: List[str]) -> tuple:
@@ -592,6 +594,27 @@ def apply_tags_to_transaction(df: pd.DataFrame, transaction_id: str, selected_ta
     df.at[df_index, "tags"] = all_tags
     
     return df, 1
+
+
+def apply_tags_to_transactions(df: pd.DataFrame, transaction_ids: List[str], all_tags: List[str]) -> tuple:
+    """Apply tags to a list of specific transactions by their IDs"""
+    if not transaction_ids or not all_tags:
+        return df, 0, set()
+
+    affected_count = 0
+    tagged_vendors = set()
+    
+    for transaction_id in transaction_ids:
+        try:
+            df_index = int(transaction_id.split('_')[1])
+            if df_index in df.index and len(df.loc[df_index, "tags"]) == 0:
+                df.at[df_index, "tags"] = all_tags
+                affected_count += 1
+                tagged_vendors.add(df.loc[df_index, 'Description'])
+        except (ValueError, IndexError, KeyError):
+            continue
+            
+    return df, affected_count, tagged_vendors
 
 
 def get_daily_context_for_transaction(df: pd.DataFrame, transaction_id: str) -> Dict:

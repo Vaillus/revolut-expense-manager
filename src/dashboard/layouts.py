@@ -163,7 +163,7 @@ def create_tagging_layout():
         dcc.Store(id='tags-config-store'),
         dcc.Store(id='vendor-tags-config-store'),
         dcc.Store(id='current-filename-store'),
-        dcc.Store(id='selected-transaction-store'),
+        dcc.Store(id='selected-transaction-store', data=[]),
         dcc.Store(id='selected-tags-store', data=[]),
         dcc.Store(id='selected-vendors-store', data=[]),
         
