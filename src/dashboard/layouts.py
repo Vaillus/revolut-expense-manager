@@ -267,5 +267,25 @@ def create_interactive_tagging_layout():
                 
 
             ], width=7)
-        ])
+        ]),
+        
+        # Modal pour l'édition du montant
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("✏️ Modifier le montant de la transaction")),
+            dbc.ModalBody([
+                html.P("Entrez le nouveau montant pour cette transaction:", className="mb-3"),
+                dbc.Input(
+                    id="edit-amount-input",
+                    type="number",
+                    step="0.01",
+                    placeholder="Montant...",
+                    className="mb-3"
+                ),
+                html.Div(id="edit-amount-feedback")
+            ]),
+            dbc.ModalFooter([
+                dbc.Button("Annuler", id="cancel-edit-btn", className="me-1", color="secondary"),
+                dbc.Button("Confirmer", id="confirm-edit-btn", color="primary")
+            ])
+        ], id="edit-transaction-modal", is_open=False, backdrop=True, keyboard=True)
     ]) 

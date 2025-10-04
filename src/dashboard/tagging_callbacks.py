@@ -1,7 +1,7 @@
 """
 Tagging workflow callbacks for the dashboard
 """
-from dash import Input, Output, html, dash_table, State, callback_context, ALL, dcc
+from dash import Input, Output, html, dash_table, State, ctx as ctx, ALL, dcc
 import pandas as pd
 from datetime import datetime
 import json
@@ -15,7 +15,7 @@ from ..utilities.data_loader import (
     get_transaction_details_for_vendors, apply_tags_to_vendors,
     apply_tags_to_transaction, get_daily_context_for_transaction,
     get_tagging_progress, save_tagged_file, update_configurations_on_disk,
-    restore_dataframe_from_store
+    restore_dataframe_from_store, prepare_dataframe_for_store
 )
 
 
@@ -211,10 +211,11 @@ def register_tagging_callbacks(app):
         return progress_bar
 
     @app.callback(
-        Output('vendor-cards-container', 'children'),
+        Output('vendor-cards-container', 'children', allow_duplicate=True),
         [Input('dataframe-store', 'data'),
          Input('vendor-tags-config-store', 'data'),
-         Input('selected-vendors-store', 'data')]
+         Input('selected-vendors-store', 'data')],
+        prevent_initial_call='initial_duplicate'
     )
     def update_vendor_cards(df_data, vendor_tags, selected_vendors):
         """Create clickable vendor cards"""
@@ -282,11 +283,11 @@ def register_tagging_callbacks(app):
     )
     def handle_vendor_selection(n_clicks_list, selected_vendors, card_ids):
         """Handle vendor card clicks to toggle selection"""
-        if not callback_context.triggered:
+        if not ctx.triggered:
             raise PreventUpdate
         
         # Find which card was clicked
-        triggered_id = callback_context.triggered[0]['prop_id']
+        triggered_id = ctx.triggered[0]['prop_id']
         
         # Extract vendor name from the triggered prop_id
         if '"type":"vendor-card"' in triggered_id:
@@ -335,10 +336,34 @@ def register_tagging_callbacks(app):
         for idx, transaction in enumerate(transaction_info['transactions']):
             card_content = html.Div([
                 html.Div([
-                    html.H6(f"🏪 {transaction['vendor']}", className="mb-1"),
-                    html.P(f"💰 {transaction['display_amount']}", className="mb-1"),
-                    html.P(f"📅 {transaction['display_date']}", className="mb-0 text-muted")
-                ], className="card-body p-2")
+                    # Contenu principal de la transaction
+                    html.Div([
+                        html.H6(f"🏪 {transaction['vendor']}", className="mb-1"),
+                        html.P(f"💰 {transaction['display_amount']}", className="mb-1"),
+                        html.P(f"📅 {transaction['display_date']}", className="mb-0 text-muted")
+                    ], style={'flex': '1'}),
+                    
+                    # Icônes d'action (visibles uniquement si sélectionné)
+                    html.Div([
+                        dbc.Button(
+                            "✏️", 
+                            id={'type': 'edit-transaction-btn', 'index': transaction['id']},
+                            size="sm", 
+                            color="warning", 
+                            outline=True,
+                            className="me-1",
+                            style={'display': 'none'}  # Caché par défaut
+                        ),
+                        dbc.Button(
+                            "🗑️", 
+                            id={'type': 'delete-transaction-btn', 'index': transaction['id']},
+                            size="sm", 
+                            color="danger", 
+                            outline=True,
+                            style={'display': 'none'}  # Caché par défaut
+                        )
+                    ], className="action-buttons", style={'display': 'flex', 'align-items': 'center'})
+                ], className="card-body p-2 d-flex justify-content-between align-items-center")
             ], 
             id={'type': 'transaction-card', 'index': transaction['id']}, 
             className="card transaction-card mb-2 cursor-pointer",
@@ -367,11 +392,11 @@ def register_tagging_callbacks(app):
     )
     def handle_transaction_selection(n_clicks_list, selected_transaction, card_ids):
         """Handle transaction card selection"""
-        if not callback_context.triggered:
+        if not ctx.triggered:
             raise PreventUpdate
         
         # Find which card was clicked
-        triggered_id = callback_context.triggered[0]['prop_id']
+        triggered_id = ctx.triggered[0]['prop_id']
         
         # Extract transaction ID from the triggered prop_id
         if '"type":"transaction-card"' in triggered_id:
@@ -426,11 +451,11 @@ def register_tagging_callbacks(app):
     )
     def handle_tag_selection(n_clicks_list, selected_tags, badge_ids):
         """Handle tag badge clicks to toggle selection"""
-        if not callback_context.triggered:
+        if not ctx.triggered:
             raise PreventUpdate
         
         # Find which badge was clicked
-        triggered_id = callback_context.triggered[0]['prop_id']
+        triggered_id = ctx.triggered[0]['prop_id']
         
         # Extract tag value from the triggered prop_id
         if '"type":"tag-badge"' in triggered_id:
@@ -701,11 +726,11 @@ def register_tagging_callbacks(app):
             raise PreventUpdate
         
         # Prevent accidental triggering from UI updates
-        if not callback_context.triggered:
+        if not ctx.triggered:
             raise PreventUpdate
         
         # Check if the callback was triggered by a real button click
-        triggered_id = callback_context.triggered[0]['prop_id']
+        triggered_id = ctx.triggered[0]['prop_id']
         if 'apply-tags-btn' not in triggered_id:
             raise PreventUpdate
         
@@ -854,4 +879,169 @@ def register_tagging_callbacks(app):
                 "❌ Error saving file. Please check the file permissions and try again.",
                 color="danger",
                 dismissable=True
-            ), current_refresh 
+            ), current_refresh
+
+    # Nouveaux callbacks pour l'édition et suppression des transactions
+    
+    @app.callback(
+        [Output({'type': 'edit-transaction-btn', 'index': ALL}, 'style'),
+         Output({'type': 'delete-transaction-btn', 'index': ALL}, 'style')],
+        [Input('selected-transaction-store', 'data')],
+        [State({'type': 'edit-transaction-btn', 'index': ALL}, 'id'),
+         State({'type': 'delete-transaction-btn', 'index': ALL}, 'id')],
+        prevent_initial_call=True
+    )
+    def toggle_action_buttons_visibility(selected_transaction, edit_btn_ids, delete_btn_ids):
+        """Show/hide action buttons based on transaction selection"""
+        edit_styles = []
+        delete_styles = []
+        
+        for btn_id in edit_btn_ids:
+            transaction_id = btn_id['index']
+            if selected_transaction == transaction_id:
+                # Montrer les boutons pour la transaction sélectionnée
+                style = {'display': 'inline-block'}
+            else:
+                # Cacher les boutons pour les autres transactions
+                style = {'display': 'none'}
+            edit_styles.append(style)
+        
+        for btn_id in delete_btn_ids:
+            transaction_id = btn_id['index']
+            if selected_transaction == transaction_id:
+                style = {'display': 'inline-block'}
+            else:
+                style = {'display': 'none'}
+            delete_styles.append(style)
+        
+        return edit_styles, delete_styles
+
+    @app.callback(
+        [Output('edit-transaction-modal', 'is_open'),
+         Output('edit-amount-input', 'value'),
+         Output('edit-amount-feedback', 'children'),
+         Output('selected-transaction-store', 'data', allow_duplicate=True)],
+        [Input({'type': 'edit-transaction-btn', 'index': ALL}, 'n_clicks'),
+         Input('cancel-edit-btn', 'n_clicks'),
+         Input('confirm-edit-btn', 'n_clicks')],
+        [State('dataframe-store', 'data'),
+         State({'type': 'edit-transaction-btn', 'index': ALL}, 'id'),
+         State('edit-amount-input', 'value'),
+         State('selected-transaction-store', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_edit_modal(edit_clicks, cancel_clicks, confirm_clicks, df_data, btn_ids, new_amount, selected_transaction):
+        """Handle edit modal opening, closing, and confirmation"""
+        if not ctx.triggered:
+            raise PreventUpdate
+            
+        triggered_id = ctx.triggered[0]['prop_id']
+        
+        # Ouvrir le modal quand un bouton d'édition est cliqué
+        if '"type":"edit-transaction-btn"' in triggered_id and any(edit_clicks):
+            if not df_data or not selected_transaction:
+                raise PreventUpdate
+            
+            # Obtenir le montant actuel
+            df_index = int(selected_transaction.split('_')[1])
+            df = restore_dataframe_from_store(df_data)
+            current_amount = abs(df.loc[df_index, 'Amount'])
+            # Garder la transaction sélectionnée
+            return True, current_amount, "", selected_transaction
+        
+        # Fermer le modal (annuler)
+        elif 'cancel-edit-btn' in triggered_id:
+            # Garder la transaction sélectionnée
+            return False, None, "", selected_transaction
+        
+        # Confirmer l'édition
+        elif 'confirm-edit-btn' in triggered_id:
+            if not new_amount or new_amount <= 0:
+                return True, new_amount, dbc.Alert("Le montant doit être positif", color="danger", dismissable=True), selected_transaction
+            # Le modal se fermera et l'édition sera traitée par un autre callback
+            # Garder la transaction sélectionnée
+            return False, None, "", selected_transaction
+        
+        raise PreventUpdate
+
+    @app.callback(
+        [Output('dataframe-store', 'data', allow_duplicate=True),
+         Output('tagging-feedback', 'children', allow_duplicate=True),
+         Output('selected-transaction-store', 'data', allow_duplicate=True),
+         Output('selected-vendors-store', 'data', allow_duplicate=True)],
+        [Input('confirm-edit-btn', 'n_clicks')],
+        [State('dataframe-store', 'data'),
+         State('selected-transaction-store', 'data'),
+         State('edit-amount-input', 'value'),
+         State('selected-vendors-store', 'data')],
+        prevent_initial_call=True
+    )
+    def confirm_edit_transaction(n_clicks, df_data, selected_transaction, new_amount, selected_vendors):
+        """Confirm transaction amount edit"""
+        if not n_clicks or not df_data or not selected_transaction or not new_amount:
+            raise PreventUpdate
+        
+        if new_amount <= 0:
+            raise PreventUpdate
+            
+        # Modifier le montant dans le DataFrame
+        df_index = int(selected_transaction.split('_')[1])
+        df = restore_dataframe_from_store(df_data)
+        
+        # Conserver le signe original (positif ou négatif)
+        original_amount = df.loc[df_index, 'Amount']
+        sign = 1 if original_amount >= 0 else -1
+        df.at[df_index, 'Amount'] = sign * new_amount
+        # Mettre à jour amount_abs pour l'affichage
+        df.at[df_index, 'amount_abs'] = new_amount
+        
+        feedback = dbc.Alert(
+            f"✏️ Montant modifié avec succès: {new_amount}€",
+            color="success",
+            dismissable=True
+        )
+        
+        # Garder les vendeurs sélectionnés mais réinitialiser la transaction sélectionnée
+        # pour forcer le rafraîchissement de l'affichage
+        return prepare_dataframe_for_store(df), feedback, None, selected_vendors
+
+    @app.callback(
+        [Output('dataframe-store', 'data', allow_duplicate=True),
+         Output('tagging-feedback', 'children', allow_duplicate=True),
+         Output('selected-transaction-store', 'data', allow_duplicate=True),
+         Output('selected-vendors-store', 'data', allow_duplicate=True)],
+        [Input({'type': 'delete-transaction-btn', 'index': ALL}, 'n_clicks')],
+        [State('dataframe-store', 'data'),
+         State({'type': 'delete-transaction-btn', 'index': ALL}, 'id'),
+         State('selected-vendors-store', 'data')],
+        prevent_initial_call=True
+    )
+    def delete_transaction(n_clicks_list, df_data, btn_ids, selected_vendors):
+        """Delete transaction when delete button is clicked"""
+        if not any(n_clicks_list) or not df_data:
+            raise PreventUpdate
+        
+        # Trouver quel bouton a été cliqué
+        triggered_id = ctx.triggered[0]['prop_id']
+        if '"type":"delete-transaction-btn"' in triggered_id:
+            import re
+            match = re.search(r'"index":"([^"]*)"', triggered_id)
+            if match:
+                transaction_id = match.group(1)
+                df_index = int(transaction_id.split('_')[1])
+                df = restore_dataframe_from_store(df_data)
+                
+                # Supprimer la transaction
+                df = df.drop(index=df_index)
+                
+                feedback = dbc.Alert(
+                    "🗑️ Transaction supprimée avec succès",
+                    color="info",
+                    dismissable=True
+                )
+                
+                # Garder les vendeurs sélectionnés pour maintenir le contexte
+                # mais forcer la mise à jour de l'affichage
+                return prepare_dataframe_for_store(df), feedback, None, selected_vendors
+        
+        raise PreventUpdate 

@@ -670,7 +670,20 @@ def get_daily_context_for_transaction(df: pd.DataFrame, transaction_id: str) -> 
 
 
 def restore_dataframe_from_store(df_data: list) -> pd.DataFrame:
-    """Restore DataFrame from store data, ensuring dates are properly converted"""
+    """Restore DataFrame from store data, ensuring all columns are properly converted
+    
+    This function:
+    1. Converts stored JSON data back to DataFrame
+    2. Restores datetime format for Date column
+    3. Recalculates numeric columns (amount_numeric, amount_abs)
+    4. Ensures data consistency after modifications
+    
+    Args:
+        df_data (list): List of dictionaries from Dash store
+        
+    Returns:
+        pd.DataFrame: Restored DataFrame with all columns properly typed
+    """
     if not df_data:
         return pd.DataFrame()
     
@@ -680,6 +693,11 @@ def restore_dataframe_from_store(df_data: list) -> pd.DataFrame:
     # Ensure Date column is datetime with time information
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'])
+    
+    # Recalculate numeric columns
+    if 'Amount' in df.columns:
+        df['amount_numeric'] = pd.to_numeric(df['Amount'], errors='coerce')
+        df['amount_abs'] = df['amount_numeric'].abs()
     
     return df
 
@@ -697,6 +715,44 @@ def get_tagging_progress(df: pd.DataFrame) -> Dict:
         'untagged_transactions': untagged_count,
         'progress_percentage': (tagged_count / total_transactions * 100) if total_transactions > 0 else 0
     }
+
+
+def prepare_dataframe_for_store(df: pd.DataFrame) -> list:
+    """Prepare DataFrame for storage in Dash store
+    Converts DataFrame to a format suitable for JSON serialization
+    
+    This function:
+    1. Converts DataFrame to dict records for JSON serialization
+    2. Handles datetime conversion to ISO format
+    3. Ensures tags are properly formatted as lists
+    4. Preserves numeric columns (Amount, amount_abs) as numbers
+    
+    Args:
+        df (pd.DataFrame): DataFrame to prepare for storage
+        
+    Returns:
+        list: List of dictionaries ready for JSON serialization and Dash store
+    """
+    if df.empty:
+        return []
+    
+    # Convert DataFrame to dict records
+    df_dict = df.to_dict('records')
+    
+    # Convert any non-serializable objects to strings
+    for record in df_dict:
+        # Convert datetime objects to string
+        if 'Date' in record and pd.notnull(record['Date']):
+            record['Date'] = pd.Timestamp(record['Date']).isoformat()
+        
+        # Convert tags to list if it's a string representation
+        if 'tags' in record and isinstance(record['tags'], str):
+            try:
+                record['tags'] = eval(record['tags'])
+            except:
+                record['tags'] = []
+    
+    return df_dict
 
 
 def save_tagged_file(df: pd.DataFrame, filename: str) -> bool:
