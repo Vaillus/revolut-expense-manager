@@ -105,14 +105,16 @@ def register_tagging_callbacks(app):
          Output('dataframe-store', 'data'),
          Output('tags-config-store', 'data'),
          Output('vendor-tags-config-store', 'data'),
-         Output('current-filename-store', 'data')],
+         Output('current-filename-store', 'data'),
+         Output('selected-vendors-store', 'data', allow_duplicate=True)],
         [Input('raw-files-table', 'selected_rows'),
-         Input('raw-files-table', 'data')]
+         Input('raw-files-table', 'data')],
+        prevent_initial_call='initial_duplicate'
     )
     def update_tagging_interface(selected_rows, table_data):
         """Update tagging interface when a file is selected"""
         if not selected_rows or not table_data:
-            return html.Div(), None, None, None, None
+            return html.Div(), None, None, None, None, []
         
         # Get selected file
         selected_file = table_data[selected_rows[0]]
@@ -154,13 +156,13 @@ def register_tagging_callbacks(app):
                 create_interactive_tagging_layout()
             ])
             
-            return summary_display, df_dict, tags, vendor_tags, filename
+            return summary_display, df_dict, tags, vendor_tags, filename, []
             
         except Exception as e:
             return html.Div([
                 html.P(f"Error processing file: {str(e)}", className="text-danger"),
                 html.P("Please check that the file is a valid CSV file", className="text-muted")
-            ]), None, None, None, None
+            ]), None, None, None, None, []
 
     @app.callback(
         Output('tagging-progress', 'children'),
@@ -283,7 +285,8 @@ def register_tagging_callbacks(app):
     )
     def handle_vendor_selection(n_clicks_list, selected_vendors, card_ids):
         """Handle vendor card clicks to toggle selection"""
-        if not ctx.triggered:
+        # Condition renforcée : ne s'exécute que si un bouton a été cliqué (n_clicks > 0)
+        if not ctx.triggered or not any(n_clicks > 0 for n_clicks in n_clicks_list if n_clicks is not None):
             raise PreventUpdate
         
         # Find which card was clicked
@@ -312,6 +315,7 @@ def register_tagging_callbacks(app):
         
         raise PreventUpdate
 
+
     @app.callback(
         Output('transaction-details', 'children'),
         [Input('selected-vendors-store', 'data'),
@@ -322,11 +326,15 @@ def register_tagging_callbacks(app):
         if not df_data:
             return []
         
+        # Vérifier explicitement si des vendeurs sont sélectionnés
+        if not selected_vendors or len(selected_vendors) == 0:
+            return html.P("Select vendors to see transaction details", className="text-muted")
+        
         # Restore DataFrame from store
         df = restore_dataframe_from_store(df_data)
         
         # Get transaction details for selected vendors
-        transaction_info = get_transaction_details_for_vendors(df, selected_vendors or [])
+        transaction_info = get_transaction_details_for_vendors(df, selected_vendors)
         
         if not transaction_info['transactions']:
             return html.P("Select vendors to see transaction details", className="text-muted")
@@ -392,7 +400,7 @@ def register_tagging_callbacks(app):
     )
     def handle_transaction_selection(n_clicks_list, selected_transaction, card_ids):
         """Handle transaction card selection"""
-        if not ctx.triggered:
+        if not ctx.triggered or not any(n_clicks > 0 for n_clicks in n_clicks_list if n_clicks is not None):
             raise PreventUpdate
         
         # Find which card was clicked
@@ -451,7 +459,7 @@ def register_tagging_callbacks(app):
     )
     def handle_tag_selection(n_clicks_list, selected_tags, badge_ids):
         """Handle tag badge clicks to toggle selection"""
-        if not ctx.triggered:
+        if not ctx.triggered or not any(n_clicks > 0 for n_clicks in n_clicks_list if n_clicks is not None):
             raise PreventUpdate
         
         # Find which badge was clicked
