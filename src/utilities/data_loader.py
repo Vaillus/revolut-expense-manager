@@ -726,9 +726,16 @@ def restore_dataframe_from_store(df_data: list) -> pd.DataFrame:
 
 
 def get_tagging_progress(df: pd.DataFrame) -> Dict:
-    """Get current tagging progress statistics"""
+    """Get current tagging progress statistics based on amount"""
     total_transactions = len(df)
     untagged_mask = df["tags"].apply(lambda tags: len(tags) == 0)
+    
+    # Calculate totals based on amount
+    total_amount = df['amount_abs'].sum()
+    tagged_amount = df[~untagged_mask]['amount_abs'].sum()
+    untagged_amount = df[untagged_mask]['amount_abs'].sum()
+    
+    # Count transactions (for display)
     untagged_count = untagged_mask.sum()
     tagged_count = total_transactions - untagged_count
     
@@ -736,7 +743,10 @@ def get_tagging_progress(df: pd.DataFrame) -> Dict:
         'total_transactions': total_transactions,
         'tagged_transactions': tagged_count,
         'untagged_transactions': untagged_count,
-        'progress_percentage': (tagged_count / total_transactions * 100) if total_transactions > 0 else 0
+        'total_amount': total_amount,
+        'tagged_amount': tagged_amount,
+        'untagged_amount': untagged_amount,
+        'progress_percentage': (tagged_amount / total_amount * 100) if total_amount > 0 else 0
     }
 
 

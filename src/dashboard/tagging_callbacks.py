@@ -179,7 +179,7 @@ def register_tagging_callbacks(app):
         # Get progress information
         progress_info = get_tagging_progress(df)
         
-        # Calculate progress percentage
+        # Calculate progress percentage (now based on amount)
         progress_percentage = progress_info['progress_percentage']
         
         # Create progress bar
@@ -202,9 +202,9 @@ def register_tagging_callbacks(app):
                     html.P(f"{progress_percentage:.1f}% Complete", className="text-center mt-2 mb-0")
                 ]),
                 html.Div([
-                    html.P(f"📝 Tagged: {progress_info['tagged_transactions']}/{progress_info['total_transactions']} transactions", 
+                    html.P(f"💰 Tagged: {progress_info['tagged_amount']:.2f}€ / {progress_info['total_amount']:.2f}€ ({progress_info['tagged_transactions']}/{progress_info['total_transactions']} transactions)", 
                            className="mb-1"),
-                    html.P(f"⏳ Remaining: {progress_info['untagged_transactions']} transactions", 
+                    html.P(f"⏳ Remaining: {progress_info['untagged_amount']:.2f}€ ({progress_info['untagged_transactions']} transactions)", 
                            className="mb-1")
                 ], className="mt-3")
             ], className="p-3 border rounded", style={'background-color': '#f8f9fa'})
@@ -605,6 +605,11 @@ def register_tagging_callbacks(app):
         from dash import no_update
         df = restore_dataframe_from_store(df_data)
         
+        # This function will determine the button's state based on the df
+        def is_save_disabled(dataframe):
+            progress = get_tagging_progress(dataframe)
+            return progress['tagged_transactions'] == 0
+
         # Prepare tags
         new_tags = []
         if new_tags_input:
@@ -622,16 +627,10 @@ def register_tagging_callbacks(app):
             )
             
             if affected_count > 0:
-                # --- DEBUG: Print tagged transactions ---
-                print("\n--- Transactions Tagged (Multi-Transaction Mode) ---")
-                tagged_indices = [int(tid.split('_')[1]) for tid in selected_transactions]
-                print(df_updated.loc[df_updated.index.isin(tagged_indices)][['Date', 'Description', 'Amount', 'tags']])
-                print("--------------------------------------------------\n")
-                
                 update_configurations_on_disk(all_tags, list(tagged_vendors))
                 feedback = dbc.Alert(f"✅ Successfully tagged {affected_count} transaction(s).", color="success")
-                # Clear selections after tagging. Also return a value for the save button.
-                return df_updated.to_dict('records'), feedback, no_update, [], "", no_update, []
+                save_disabled = is_save_disabled(df_updated)
+                return df_updated.to_dict('records'), feedback, no_update, [], "", save_disabled, []
             else:
                 feedback = dbc.Alert("⚠️ No transactions were tagged (they may already be tagged).", color="warning")
                 return no_update, feedback, no_update, no_update, no_update, no_update, no_update
@@ -641,18 +640,10 @@ def register_tagging_callbacks(app):
             df_updated, affected_count = apply_tags_to_vendors(df, selected_vendors, selected_tags or [], new_tags)
             
             if affected_count > 0:
-                # --- DEBUG: Print tagged transactions ---
-                print(f"\n--- Transactions Tagged (Vendor Mode: {', '.join(selected_vendors)}) ---")
-                mask_untagged_before = df["tags"].apply(lambda tags: len(tags) == 0)
-                mask_vendors = df["Description"].isin(selected_vendors)
-                tagged_indices = df[mask_untagged_before & mask_vendors].index
-                print(df_updated.loc[tagged_indices][['Date', 'Description', 'Amount', 'tags']])
-                print("--------------------------------------------------\n")
-
                 update_configurations_on_disk(all_tags, selected_vendors)
                 feedback = dbc.Alert(f"✅ Successfully tagged {affected_count} transactions for {len(selected_vendors)} vendor(s).", color="success")
-                # Clear selections and vendors after tagging
-                return df_updated.to_dict('records'), feedback, [], [], "", [], []
+                save_disabled = is_save_disabled(df_updated)
+                return df_updated.to_dict('records'), feedback, [], [], "", save_disabled, []
             else:
                 feedback = dbc.Alert("⚠️ No untagged transactions found for the selected vendor(s).", color="warning")
         
@@ -781,7 +772,7 @@ def register_tagging_callbacks(app):
          State('selected-transaction-store', 'data')],
         prevent_initial_call=True
     )
-    def handle_edit_modal(edit_clicks, cancel_clicks, confirm_clicks, df_data, btn_ids, new_amount, selected_transaction):
+    def handle_edit_modal(edit_clicks, cancel_clicks, confirm_clicks, df_data, btn_ids, new_amount, selected_transactions):
         """Handle edit modal opening, closing, and confirmation"""
         if not ctx.triggered:
             raise PreventUpdate
@@ -790,28 +781,30 @@ def register_tagging_callbacks(app):
         
         # Ouvrir le modal quand un bouton d'édition est cliqué
         if '"type":"edit-transaction-btn"' in triggered_id and any(edit_clicks):
-            if not df_data or not selected_transaction:
+            # Ensure only one transaction is selected for editing
+            if not df_data or not selected_transactions or len(selected_transactions) != 1:
                 raise PreventUpdate
             
             # Obtenir le montant actuel
-            df_index = int(selected_transaction.split('_')[1])
+            single_transaction_id = selected_transactions[0]
+            df_index = int(single_transaction_id.split('_')[1])
             df = restore_dataframe_from_store(df_data)
             current_amount = abs(df.loc[df_index, 'Amount'])
             # Garder la transaction sélectionnée
-            return True, current_amount, "", selected_transaction
+            return True, current_amount, "", selected_transactions
         
         # Fermer le modal (annuler)
         elif 'cancel-edit-btn' in triggered_id:
             # Garder la transaction sélectionnée
-            return False, None, "", selected_transaction
+            return False, None, "", selected_transactions
         
         # Confirmer l'édition
         elif 'confirm-edit-btn' in triggered_id:
             if not new_amount or new_amount <= 0:
-                return True, new_amount, dbc.Alert("Le montant doit être positif", color="danger", dismissable=True), selected_transaction
+                return True, new_amount, dbc.Alert("Le montant doit être positif", color="danger", dismissable=True), selected_transactions
             # Le modal se fermera et l'édition sera traitée par un autre callback
             # Garder la transaction sélectionnée
-            return False, None, "", selected_transaction
+            return False, None, "", selected_transactions
         
         raise PreventUpdate
 
@@ -827,16 +820,18 @@ def register_tagging_callbacks(app):
          State('selected-vendors-store', 'data')],
         prevent_initial_call=True
     )
-    def confirm_edit_transaction(n_clicks, df_data, selected_transaction, new_amount, selected_vendors):
+    def confirm_edit_transaction(n_clicks, df_data, selected_transactions, new_amount, selected_vendors):
         """Confirm transaction amount edit"""
-        if not n_clicks or not df_data or not selected_transaction or not new_amount:
+        # Ensure only one transaction is selected for editing
+        if not n_clicks or not df_data or not selected_transactions or len(selected_transactions) != 1 or not new_amount:
             raise PreventUpdate
         
         if new_amount <= 0:
             raise PreventUpdate
             
         # Modifier le montant dans le DataFrame
-        df_index = int(selected_transaction.split('_')[1])
+        single_transaction_id = selected_transactions[0]
+        df_index = int(single_transaction_id.split('_')[1])
         df = restore_dataframe_from_store(df_data)
         
         # Conserver le signe original (positif ou négatif)
@@ -854,7 +849,7 @@ def register_tagging_callbacks(app):
         
         # Garder les vendeurs sélectionnés mais réinitialiser la transaction sélectionnée
         # pour forcer le rafraîchissement de l'affichage
-        return prepare_dataframe_for_store(df), feedback, None, selected_vendors
+        return prepare_dataframe_for_store(df), feedback, [], selected_vendors
 
     @app.callback(
         [Output('dataframe-store', 'data', allow_duplicate=True),
