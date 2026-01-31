@@ -277,7 +277,10 @@ def register_tagging_callbacks(app):
         return vendor_cards
 
     @app.callback(
-        Output('selected-vendors-store', 'data'),
+        [Output('selected-vendors-store', 'data'),
+         Output('selected-transaction-store', 'data', allow_duplicate=True),
+         Output('selected-tags-store', 'data', allow_duplicate=True),
+         Output({'type': 'vendor-card', 'index': ALL}, 'style')],
         [Input({'type': 'vendor-card', 'index': ALL}, 'n_clicks')],
         [State('selected-vendors-store', 'data'),
          State({'type': 'vendor-card', 'index': ALL}, 'id')],
@@ -311,7 +314,30 @@ def register_tagging_callbacks(app):
                     # Add vendor if not selected
                     selected_vendors.append(clicked_vendor)
                 
-                return selected_vendors
+                # Update card styles based on selection
+                card_styles = []
+                for card_id in card_ids:
+                    vendor_name = card_id['index']
+                    if vendor_name in selected_vendors:
+                        style = {
+                            'border': '2px solid #007bff',
+                            'border-radius': '8px',
+                            'background-color': '#e7f3ff',
+                            'transition': 'all 0.2s ease',
+                            'cursor': 'pointer',
+                            'transform': 'scale(1.02)'
+                        }
+                    else:
+                        style = {
+                            'border': '1px solid #dee2e6',
+                            'border-radius': '8px',
+                            'transition': 'all 0.2s ease',
+                            'cursor': 'pointer'
+                        }
+                    card_styles.append(style)
+                
+                # Reset selected transactions and tags when vendor selection changes
+                return selected_vendors, [], [], card_styles
         
         raise PreventUpdate
 
