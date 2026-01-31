@@ -15,7 +15,9 @@ from ..utilities.data_loader import (
     get_transaction_details_for_vendors, apply_tags_to_vendors,
     apply_tags_to_transaction, apply_tags_to_transactions, get_daily_context_for_transaction,
     get_tagging_progress, save_tagged_file, update_configurations_on_disk,
-    restore_dataframe_from_store, prepare_dataframe_for_store
+    restore_dataframe_from_store, prepare_dataframe_for_store,
+    remove_transactions_from_raw, get_remaining_raw_count,
+    mark_month_as_completed, save_expenses
 )
 
 
@@ -612,7 +614,6 @@ def register_tagging_callbacks(app):
             Output('selected-vendors-store', 'data', allow_duplicate=True),
             Output('selected-tags-store', 'data', allow_duplicate=True),
             Output('new-tags-input', 'value'),
-            Output('save-file-btn', 'disabled'),
             Output('selected-transaction-store', 'data', allow_duplicate=True),
         ],
         [
@@ -636,11 +637,6 @@ def register_tagging_callbacks(app):
             
         from dash import no_update
         df = restore_dataframe_from_store(df_data)
-        
-        # This function will determine the button's state based on the df
-        def is_save_disabled(dataframe):
-            progress = get_tagging_progress(dataframe)
-            return progress['tagged_transactions'] == 0
 
         # Prepare tags
         new_tags = []
@@ -649,7 +645,7 @@ def register_tagging_callbacks(app):
         
         all_tags = (selected_tags or []) + new_tags
         if not all_tags:
-            return no_update, dbc.Alert("No tags selected or entered.", color="warning"), no_update, no_update, "", no_update, no_update
+            return no_update, dbc.Alert("No tags selected or entered.", color="warning"), no_update, no_update, "", no_update
 
         # Determine mode: multi-transaction or vendor-based
         if selected_transactions:
@@ -661,11 +657,10 @@ def register_tagging_callbacks(app):
             if affected_count > 0:
                 update_configurations_on_disk(all_tags, list(tagged_vendors))
                 feedback = dbc.Alert(f"✅ Successfully tagged {affected_count} transaction(s).", color="success")
-                save_disabled = is_save_disabled(df_updated)
-                return df_updated.to_dict('records'), feedback, no_update, [], "", save_disabled, []
+                return df_updated.to_dict('records'), feedback, no_update, [], "", []
             else:
                 feedback = dbc.Alert("⚠️ No transactions were tagged (they may already be tagged).", color="warning")
-                return no_update, feedback, no_update, no_update, no_update, no_update, no_update
+                return no_update, feedback, no_update, no_update, no_update, no_update
         
         elif selected_vendors:
             # --- Vendor-based Tagging ---
@@ -674,8 +669,7 @@ def register_tagging_callbacks(app):
             if affected_count > 0:
                 update_configurations_on_disk(all_tags, selected_vendors)
                 feedback = dbc.Alert(f"✅ Successfully tagged {affected_count} transactions for {len(selected_vendors)} vendor(s).", color="success")
-                save_disabled = is_save_disabled(df_updated)
-                return df_updated.to_dict('records'), feedback, [], [], "", save_disabled, []
+                return df_updated.to_dict('records'), feedback, [], [], "", []
             else:
                 feedback = dbc.Alert("⚠️ No untagged transactions found for the selected vendor(s).", color="warning")
         
@@ -683,17 +677,19 @@ def register_tagging_callbacks(app):
             feedback = dbc.Alert("Select vendors or transactions first.", color="info")
 
         # Fallback return for cases that don't update the dataframe
-        return no_update, feedback, no_update, no_update, no_update, no_update, no_update
+        return no_update, feedback, no_update, no_update, no_update, no_update
 
     @app.callback(
         [Output('save-file-btn', 'children'),
-         Output('save-file-btn', 'color')],
+         Output('save-file-btn', 'color'),
+         Output('save-file-btn', 'disabled'),
+         Output('finish-month-btn', 'disabled')],
         [Input('dataframe-store', 'data')]
     )
     def update_save_button(df_data):
         """Update save button appearance based on tagging progress"""
         if not df_data:
-            return "💾 Save Tagged File", "secondary"
+            return "💾 Save Tagged File", "secondary", True, True
         
         # Restore DataFrame from store
         df = restore_dataframe_from_store(df_data)
@@ -702,11 +698,11 @@ def register_tagging_callbacks(app):
         progress_info = get_tagging_progress(df)
         
         if progress_info['tagged_transactions'] == 0:
-            return "💾 Save Tagged File", "secondary"
+            return "💾 Save Tagged File", "secondary", True, False  # Enable finish month even if nothing tagged
         elif progress_info['progress_percentage'] == 100:
-            return f"🎉 Save Complete File ({progress_info['tagged_transactions']} tagged)", "success"
+            return f"🎉 Save Complete File ({progress_info['tagged_transactions']} tagged)", "success", False, False
         else:
-            return f"💾 Save Progress ({progress_info['tagged_transactions']} tagged)", "primary"
+            return f"💾 Save Progress ({progress_info['tagged_transactions']} tagged)", "primary", False, False
 
     @app.callback(
         [Output('tagging-feedback', 'children', allow_duplicate=True),
@@ -718,7 +714,7 @@ def register_tagging_callbacks(app):
         prevent_initial_call=True
     )
     def save_tagged_file_callback(n_clicks, df_data, filename, current_refresh):
-        """Save the tagged file to processed directory"""
+        """Save the tagged file to processed directory and remove saved transactions from raw"""
         if not n_clicks or not df_data or not filename:
             raise PreventUpdate
         
@@ -735,23 +731,177 @@ def register_tagging_callbacks(app):
                 dismissable=True
             ), current_refresh
         
-        # Save the file
-        success = save_tagged_file(df, filename)
+        # Filter only tagged transactions for saving
+        tagged_mask = df["tags"].apply(lambda tags: len(tags) > 0)
+        tagged_df = df[tagged_mask].copy()
         
-        if success:
+        # Save only tagged transactions
+        save_result = save_tagged_file(tagged_df, filename)
+        
+        if save_result['success']:
+            # Remove saved transactions from raw file
+            remove_success = remove_transactions_from_raw(filename, tagged_df)
+            
+            # Get remaining count
+            remaining_count = get_remaining_raw_count(filename)
+            
             # Increment refresh counter to trigger visualization updates
             new_refresh = current_refresh + 1
-            return dbc.Alert([
-                html.H5("🎉 File saved successfully!", className="mb-2"),
-                html.P(f"📁 Saved to: data/processed/{filename}"),
-                html.P(f"📊 Progress: {progress_info['tagged_transactions']}/{progress_info['total_transactions']} transactions tagged ({progress_info['progress_percentage']:.1f}%)")
-            ], color="success", dismissable=True), new_refresh
+            
+            # Build success message
+            message_parts = [
+                html.H5("✅ Progress saved successfully!", className="mb-2"),
+                html.P(f"📊 Saved {save_result['saved_count']} tagged transactions to expenses.csv"),
+            ]
+            
+            if remove_success:
+                message_parts.append(html.P(f"🗑️ Removed saved transactions from raw file"))
+            
+            if remaining_count > 0:
+                message_parts.append(html.P(f"⏳ {remaining_count} transactions remain to tag", className="text-info"))
+            else:
+                message_parts.append(html.P(f"🎉 All transactions processed! You can finish the month.", className="text-success"))
+            
+            return dbc.Alert(message_parts, color="success", dismissable=True), new_refresh
         else:
             return dbc.Alert(
                 "❌ Error saving file. Please check the file permissions and try again.",
                 color="danger",
                 dismissable=True
             ), current_refresh
+
+    @app.callback(
+        [Output('tagging-feedback', 'children', allow_duplicate=True),
+         Output('refresh-visualizations-store', 'data', allow_duplicate=True),
+         Output('raw-files-list', 'children', allow_duplicate=True)],
+        [Input('finish-month-btn', 'n_clicks')],
+        [State('dataframe-store', 'data'),
+         State('current-filename-store', 'data'),
+         State('refresh-visualizations-store', 'data')],
+        prevent_initial_call=True
+    )
+    def finish_month_callback(n_clicks, df_data, filename, current_refresh):
+        """Finish month: save all remaining transactions and mark as completed"""
+        if not n_clicks or not df_data or not filename:
+            raise PreventUpdate
+        
+        # Restore DataFrame from store
+        df = restore_dataframe_from_store(df_data)
+        
+        if df.empty:
+            return dbc.Alert(
+                "⚠️ No transactions to save.",
+                color="warning",
+                dismissable=True
+            ), current_refresh, []
+        
+        # Extract month from filename
+        month = filename.replace('.csv', '')
+        
+        # Save ALL transactions (tagged + untagged)
+        # Ensure untagged transactions have empty tags list
+        save_df = df.copy()
+        save_df['tags'] = save_df['tags'].apply(lambda tags: tags if isinstance(tags, list) and len(tags) > 0 else [])
+        
+        # Save all transactions
+        save_result = save_expenses(save_df, month=month)
+        
+        if not save_result['success']:
+            return dbc.Alert(
+                "❌ Error saving transactions. Please try again.",
+                color="danger",
+                dismissable=True
+            ), current_refresh, []
+        
+        # Mark month as completed
+        mark_success = mark_month_as_completed(month)
+        
+        # Remove all transactions from raw file (since we saved everything)
+        remove_success = remove_transactions_from_raw(filename, save_df)
+        
+        # Increment refresh counter
+        new_refresh = current_refresh + 1
+        
+        # Build success message
+        message_parts = [
+            html.H5("🎉 Month completed successfully!", className="mb-2"),
+            html.P(f"✅ Saved {save_result['saved_count']} transactions to expenses.csv"),
+        ]
+        
+        if mark_success:
+            message_parts.append(html.P(f"📅 Month {month} marked as completed", className="text-success"))
+        
+        if remove_success:
+            message_parts.append(html.P(f"🗑️ Raw file cleared"))
+        
+        # Refresh raw files list
+        try:
+            raw_files = get_raw_files()
+            
+            if not raw_files:
+                raw_files_display = html.Div([
+                    html.P("No raw files found in data/raw/ directory", className="text-muted"),
+                    html.P("Place your Revolut CSV files in the data/raw/ folder to start tagging", 
+                          className="text-info")
+                ])
+            else:
+                # Create a table with file information
+                table_data = []
+                for file_info in raw_files:
+                    size_mb = file_info['size'] / (1024 * 1024)
+                    size_str = f"{size_mb:.2f} MB"
+                    mod_date = datetime.fromtimestamp(file_info['modified']).strftime('%Y-%m-%d %H:%M')
+                    
+                    table_data.append({
+                        'filename': file_info['filename'],
+                        'rows': file_info['num_rows'] if file_info['readable'] else 'Error',
+                        'size': size_str,
+                        'modified': mod_date,
+                        'status': 'Ready' if file_info['readable'] else 'Error'
+                    })
+                
+                from dash import dash_table
+                raw_files_display = html.Div([
+                    dash_table.DataTable(
+                        id='raw-files-table',
+                        columns=[
+                            {"name": "📄 File Name", "id": "filename"},
+                            {"name": "📊 Rows", "id": "rows"},
+                            {"name": "💾 Size", "id": "size"},
+                            {"name": "📅 Modified", "id": "modified"},
+                            {"name": "🔍 Status", "id": "status"}
+                        ],
+                        data=table_data,
+                        style_cell={'textAlign': 'left'},
+                        style_data_conditional=[
+                            {
+                                'if': {'filter_query': '{status} = Error'},
+                                'backgroundColor': '#ffebee',
+                                'color': 'black',
+                            },
+                            {
+                                'if': {'filter_query': '{status} = Ready'},
+                                'backgroundColor': '#e8f5e8',
+                                'color': 'black',
+                            }
+                        ],
+                        style_header={
+                            'backgroundColor': '#f8f9fa',
+                            'fontWeight': 'bold'
+                        },
+                        row_selectable='single',
+                        selected_rows=[],
+                        page_size=10
+                    ),
+                    html.P(f"Found {len(raw_files)} raw file(s)", className="text-muted mt-2")
+                ])
+        except Exception as e:
+            raw_files_display = html.Div([
+                html.P(f"Error loading raw files: {str(e)}", className="text-danger"),
+                html.P("Please check that the data/raw/ directory exists", className="text-muted")
+            ])
+        
+        return dbc.Alert(message_parts, color="success", dismissable=True), new_refresh, raw_files_display
 
     # Nouveaux callbacks pour l'édition et suppression des transactions
     

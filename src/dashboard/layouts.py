@@ -244,6 +244,14 @@ def create_interactive_tagging_layout():
                                 size="lg",
                                 disabled=True,
                                 className="w-100"
+                            ),
+                            dbc.Button(
+                                "🏁 Finish Month", 
+                                id='finish-month-btn',
+                                color="warning",
+                                size="lg",
+                                disabled=True,
+                                className="w-100 mt-2"
                             )
                         ])
                     ])

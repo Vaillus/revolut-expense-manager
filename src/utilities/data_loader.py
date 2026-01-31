@@ -50,6 +50,62 @@ def load_config(filename: str) -> Dict[str, Any]:
         return json.load(f)
 
 
+def load_completed_months() -> Dict[str, Any]:
+    """Load completed months configuration"""
+    try:
+        return load_config('completed_months.json')
+    except FileNotFoundError:
+        # Return empty structure if file doesn't exist
+        return {"completed_months": [], "last_completed": None}
+    except Exception as e:
+        print(f"Error loading completed_months.json: {e}")
+        return {"completed_months": [], "last_completed": None}
+
+
+def get_completed_months() -> List[str]:
+    """Get list of completed months"""
+    config = load_completed_months()
+    return config.get("completed_months", [])
+
+
+def get_last_completed_month() -> Optional[str]:
+    """Get the most recently completed month"""
+    config = load_completed_months()
+    return config.get("last_completed")
+
+
+def mark_month_as_completed(month: str) -> bool:
+    """Mark a month as completed and update JSON file"""
+    try:
+        config = load_completed_months()
+        completed_months = config.get("completed_months", [])
+        
+        # Add month if not already in list
+        if month not in completed_months:
+            completed_months.append(month)
+            completed_months.sort(reverse=True)  # Most recent first
+        
+        # Update config
+        config["completed_months"] = completed_months
+        config["last_completed"] = month
+        
+        # Save to file
+        config_path = get_config_file('completed_months.json')
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        
+        return True
+    except Exception as e:
+        print(f"Error marking month as completed: {e}")
+        return False
+
+
+def is_month_completed(month: str) -> bool:
+    """Check if a month is marked as completed"""
+    completed_months = get_completed_months()
+    return month in completed_months
+
+
 def parse_tags(tags: Any) -> List[str]:
     """Parse tags from various formats into a list of strings"""
     if pd.isna(tags) or not tags:
@@ -412,6 +468,103 @@ def preprocess_raw_file(filename: str) -> tuple:
     }
     
     return expenses_df, summary_info, untagged_summary
+
+
+def remove_transactions_from_raw(filename: str, transactions_to_remove: pd.DataFrame) -> bool:
+    """Remove specific transactions from raw file
+    
+    Match transactions by: Date + Amount + Description
+    Rewrite the raw CSV without matched transactions
+    
+    Args:
+        filename: Name of the raw file (e.g., '2025-12.csv')
+        transactions_to_remove: DataFrame with transactions to remove (must have Date, Amount, Description columns)
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        from .paths import get_raw_file
+        
+        raw_file_path = get_raw_file(filename)
+        
+        if not raw_file_path.exists():
+            print(f"Raw file {filename} does not exist")
+            return False
+        
+        # Load the raw file
+        raw_df = pd.read_csv(raw_file_path)
+        
+        # Normalize dates for comparison
+        raw_df['Date'] = pd.to_datetime(raw_df['Date'], format='mixed', errors='coerce')
+        transactions_to_remove['Date'] = pd.to_datetime(transactions_to_remove['Date'], format='mixed', errors='coerce')
+        
+        # Normalize amounts (convert to numeric)
+        raw_df['Amount'] = pd.to_numeric(raw_df['Amount'], errors='coerce')
+        transactions_to_remove['Amount'] = pd.to_numeric(transactions_to_remove['Amount'], errors='coerce')
+        
+        # Create matching mask
+        # Match on Date (same day), Amount, and Description
+        mask = pd.Series([False] * len(raw_df))
+        
+        for _, trans in transactions_to_remove.iterrows():
+            # Match transactions with same Date (day), Amount, and Description
+            date_match = raw_df['Date'].dt.date == trans['Date'].date() if pd.notna(trans['Date']) else False
+            amount_match = raw_df['Amount'] == trans['Amount']
+            desc_match = raw_df['Description'] == trans['Description']
+            
+            # Combine matches
+            combined_match = date_match & amount_match & desc_match
+            mask = mask | combined_match
+        
+        # Keep only transactions that don't match
+        remaining_df = raw_df[~mask].copy()
+        
+        # If no transactions remain, we could delete the file or leave it empty
+        # For now, we'll save an empty file with headers
+        if len(remaining_df) == 0:
+            # Keep only headers
+            remaining_df = pd.DataFrame(columns=raw_df.columns)
+        
+        # Save the updated raw file
+        remaining_df.to_csv(raw_file_path, index=False)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error removing transactions from raw file: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def get_remaining_raw_count(filename: str) -> int:
+    """Count how many transactions remain in raw file
+    
+    Args:
+        filename: Name of the raw file (e.g., '2025-12.csv')
+    
+    Returns:
+        Number of expense transactions remaining in the raw file
+    """
+    try:
+        from .paths import get_raw_file
+        
+        raw_file_path = get_raw_file(filename)
+        
+        if not raw_file_path.exists():
+            return 0
+        
+        # Load and count expenses
+        df = pd.read_csv(raw_file_path)
+        df['amount_numeric'] = pd.to_numeric(df['Amount'], errors='coerce')
+        expenses_df = df[df['amount_numeric'] < 0]
+        
+        return len(expenses_df)
+        
+    except Exception as e:
+        print(f"Error counting remaining transactions: {e}")
+        return 0
 
 
 def analyze_untagged_vendors(df: pd.DataFrame, vendor_tags: dict) -> dict:
@@ -816,7 +969,7 @@ def prepare_dataframe_for_store(df: pd.DataFrame) -> list:
     return df_dict
 
 
-def save_expenses(df: pd.DataFrame, month: Optional[str] = None) -> bool:
+def save_expenses(df: pd.DataFrame, month: Optional[str] = None) -> Dict[str, Any]:
     """Save expenses to the unified CSV file
     
     Args:
@@ -825,11 +978,17 @@ def save_expenses(df: pd.DataFrame, month: Optional[str] = None) -> bool:
                If None, will replace all data with df.
     
     Returns:
-        True if successful, False otherwise
+        dict with keys:
+        - success: bool
+        - saved_count: int (number of rows saved)
+        - saved_df: pd.DataFrame (the DataFrame that was saved, for matching purposes)
     """
     try:
         # Prepare DataFrame for saving
         save_df = df.copy()
+        
+        # Store original indices for matching
+        original_indices = save_df.index.tolist()
         
         # Convert tags list to string representation for CSV
         if 'tags' in save_df.columns:
@@ -868,17 +1027,38 @@ def save_expenses(df: pd.DataFrame, month: Optional[str] = None) -> bool:
         expenses_file = get_expenses_file()
         save_df.to_csv(expenses_file, index=False)
         
-        return True
+        # Count how many rows were added (for this month)
+        if month:
+            saved_count = len(df)
+        else:
+            saved_count = len(save_df)
+        
+        # Return the saved DataFrame (only new rows) for matching
+        # Extract only the rows that correspond to the input df
+        if month:
+            saved_df = save_df[save_df['month'] == month].copy()
+        else:
+            saved_df = save_df.copy()
+        
+        return {
+            'success': True,
+            'saved_count': saved_count,
+            'saved_df': saved_df
+        }
         
     except Exception as e:
         print(f"Error saving expenses: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return {
+            'success': False,
+            'saved_count': 0,
+            'saved_df': pd.DataFrame()
+        }
 
 
 # Keep old function name for backward compatibility
-def save_tagged_file(df: pd.DataFrame, filename: str) -> bool:
+def save_tagged_file(df: pd.DataFrame, filename: str) -> Dict[str, Any]:
     """Save tagged file (backward compatibility wrapper)
     
     Args:
@@ -886,7 +1066,7 @@ def save_tagged_file(df: pd.DataFrame, filename: str) -> bool:
         filename: Original filename (e.g., '2025-12.csv'), used to extract month
     
     Returns:
-        True if successful, False otherwise
+        dict with save info (see save_expenses for structure)
     """
     # Extract month from filename
     month = filename.replace('.csv', '')

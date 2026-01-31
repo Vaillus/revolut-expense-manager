@@ -8,7 +8,7 @@ import pandas as pd
 from ..utilities.data_loader import (
     load_config, load_all_processed_data, get_main_category,
     get_subtags_for_category, get_monthly_trend, get_latest_month, get_month_data,
-    get_available_months
+    get_available_months, get_last_completed_month, get_completed_months
 )
 
 
@@ -28,9 +28,19 @@ def register_categories_callbacks(app):
         
         try:
             months = get_available_months()
-            options = [{'label': month, 'value': month} for month in months]
-            # Default to most recent month
-            default_value = months[0] if months else None
+            # Mark completed months with checkmark
+            completed_months = get_completed_months()
+            options = []
+            for month in months:
+                if month in completed_months:
+                    options.append({'label': f"{month} ✓", 'value': month})
+                else:
+                    options.append({'label': month, 'value': month})
+            
+            # Default to last completed month, or latest available if none completed
+            default_value = get_last_completed_month()
+            if not default_value and months:
+                default_value = months[0]
             
             return options, default_value
         except Exception as e:
