@@ -7,7 +7,7 @@ import pandas as pd
 
 from ..utilities.data_loader import (
     load_config, load_all_processed_data, get_main_category,
-    get_subtags_for_category, get_monthly_trend, get_latest_processed_file, load_month_data
+    get_subtags_for_category, get_monthly_trend, get_latest_month, get_month_data
 )
 
 
@@ -24,22 +24,19 @@ def register_categories_callbacks(app):
         if active_tab != 'categories-tab':
             return {}
         
-        # Load latest processed file dynamically
+        # Load latest month data dynamically
         try:
-            latest_file = get_latest_processed_file()
-            if not latest_file:
+            month = get_latest_month()
+            if not month:
                 return {}
                 
             main_categories = load_config('main_categories.json')
-            current_month_data = load_month_data(latest_file)
+            current_month_data = get_month_data(month)
             
             # Apply main categories
             current_month_data['main_category'] = current_month_data['parsed_tags'].apply(
                 lambda tags: get_main_category(tags, main_categories)
             )
-            
-            # Extract month from filename for display
-            month = latest_file.replace('.csv', '')
             
         except Exception as e:
             print(f"Error loading latest data: {e}")
@@ -86,20 +83,17 @@ def register_categories_callbacks(app):
         
         # Load data dynamically
         try:
-            latest_file = get_latest_processed_file()
-            if not latest_file:
+            month = get_latest_month()
+            if not month:
                 return {}, {}, []
                 
             main_categories = load_config('main_categories.json')
-            current_month_data = load_month_data(latest_file)
+            current_month_data = get_month_data(month)
             
             # Apply main categories
             current_month_data['main_category'] = current_month_data['parsed_tags'].apply(
                 lambda tags: get_main_category(tags, main_categories)
             )
-            
-            # Extract month from filename for display
-            month = latest_file.replace('.csv', '')
             
             # Load all data for trend analysis
             all_data = load_all_processed_data()

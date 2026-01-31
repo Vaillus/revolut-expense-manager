@@ -124,6 +124,12 @@ def register_tagging_callbacks(app):
             # Preprocess the selected file
             expenses_df, summary_info, untagged_summary = preprocess_raw_file(filename)
             
+            # Extract month from filename (assuming format: YYYY-MM.csv)
+            month = filename.replace('.csv', '')
+            
+            # Add month column to expenses
+            expenses_df['month'] = month
+            
             # Load tagging configurations
             tags, vendor_tags = load_tagging_configs()
             

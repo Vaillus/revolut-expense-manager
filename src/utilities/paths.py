@@ -40,6 +40,10 @@ def get_processed_file(filename: str) -> Path:
     """Get a processed data file path"""
     return get_processed_data_dir() / filename
 
+def get_expenses_file() -> Path:
+    """Get the unified expenses CSV file path"""
+    return get_processed_data_dir() / "expenses.csv"
+
 def ensure_dir_exists(path: Union[str, Path]) -> Path:
     """Ensure a directory exists, create if it doesn't"""
     path = Path(path)

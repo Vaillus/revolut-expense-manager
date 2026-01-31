@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 from collections import defaultdict
 from pathlib import Path
 
-from .paths import get_config_file, get_processed_file
+from .paths import get_config_file, get_processed_file, get_expenses_file
 
 
 def _detect_and_map_columns(columns: List[str]) -> Dict[str, str]:
@@ -66,10 +66,15 @@ def parse_tags(tags: Any) -> List[str]:
     return []
 
 
-def load_month_data(filename: str) -> pd.DataFrame:
-    """Load and process data for a specific month"""
-    file_path = get_processed_file(filename)
-    df = pd.read_csv(file_path)
+def load_all_expenses() -> pd.DataFrame:
+    """Load the unified expenses CSV file"""
+    expenses_file = get_expenses_file()
+    
+    if not expenses_file.exists():
+        print(f"Warning: {expenses_file} does not exist")
+        return pd.DataFrame()
+    
+    df = pd.read_csv(expenses_file)
     df['parsed_tags'] = df['tags'].apply(parse_tags)
     df['amount_numeric'] = pd.to_numeric(df['Amount'], errors='coerce')
     
@@ -80,58 +85,81 @@ def load_month_data(filename: str) -> pd.DataFrame:
     return expenses_df
 
 
-def get_latest_processed_file() -> Optional[str]:
-    """Get the filename of the most recent processed file based on filename date"""
-    from .paths import get_processed_data_dir
-    processed_dir = get_processed_data_dir()
+def get_month_data(month: str) -> pd.DataFrame:
+    """Get expenses for a specific month
     
-    if not processed_dir.exists():
-        return None
+    Args:
+        month: Month in format YYYY-MM (e.g., '2025-04')
     
-    csv_files = list(processed_dir.glob("*.csv"))
+    Returns:
+        DataFrame with expenses for that month
+    """
+    df = load_all_expenses()
+    if df.empty:
+        return df
     
-    if not csv_files:
-        return None
-    
-    # Sort by filename (assuming format: YYYY-MM.csv)
-    csv_files.sort(key=lambda x: x.stem, reverse=True)
-    
-    return csv_files[0].name
+    return df[df['month'] == month].copy()
 
 
-def get_all_processed_files() -> List[str]:
-    """Get all processed file names"""
-    from .paths import get_processed_data_dir
-    processed_dir = get_processed_data_dir()
+def get_available_months() -> List[str]:
+    """Get list of all months with expenses
     
-    if not processed_dir.exists():
+    Returns:
+        List of months in format YYYY-MM, sorted in reverse chronological order
+    """
+    df = load_all_expenses()
+    if df.empty:
         return []
     
-    csv_files = list(processed_dir.glob("*.csv"))
-    return [f.name for f in csv_files]
+    return sorted(df['month'].unique().tolist(), reverse=True)
+
+
+def get_latest_month() -> Optional[str]:
+    """Get the most recent month with expenses
+    
+    Returns:
+        Month string in format YYYY-MM, or None if no data
+    """
+    months = get_available_months()
+    return months[0] if months else None
+
+
+# DEPRECATED: Kept for backward compatibility during migration
+def load_month_data(filename: str) -> pd.DataFrame:
+    """Load and process data for a specific month (DEPRECATED)
+    
+    This function is deprecated. Use get_month_data(month) instead.
+    """
+    # Extract month from filename
+    month = filename.replace('.csv', '')
+    return get_month_data(month)
+
+
+# DEPRECATED: Use get_latest_month() instead
+def get_latest_processed_file() -> Optional[str]:
+    """Get the filename of the most recent processed file (DEPRECATED)
+    
+    This function is deprecated. Use get_latest_month() instead.
+    Returns a filename in format YYYY-MM.csv for backward compatibility.
+    """
+    month = get_latest_month()
+    return f"{month}.csv" if month else None
+
+
+# DEPRECATED: This function is no longer used with unified CSV structure
+def get_all_processed_files() -> List[str]:
+    """Get all processed file names (DEPRECATED)
+    
+    This function is deprecated. Use get_available_months() instead.
+    """
+    print("Warning: get_all_processed_files() is deprecated. Use get_available_months() instead.")
+    months = get_available_months()
+    return [f"{month}.csv" for month in months]
 
 
 def load_all_processed_data() -> pd.DataFrame:
-    """Load all processed data files and combine them"""
-    from .paths import get_processed_data_dir
-    processed_dir = get_processed_data_dir()
-    csv_files = list(processed_dir.glob("*.csv"))
-    
-    all_data = []
-    for csv_file in csv_files:
-        try:
-            df = load_month_data(csv_file.name)
-            # Extract month from filename (assuming format: YYYY-MM.csv)
-            month = csv_file.stem
-            df['month'] = month
-            all_data.append(df)
-        except Exception as e:
-            print(f"Error loading {csv_file}: {e}")
-    
-    if all_data:
-        return pd.concat(all_data, ignore_index=True)
-    else:
-        return pd.DataFrame()
+    """Load all processed expenses data (from unified CSV)"""
+    return load_all_expenses()
 
 
 def get_main_category(tags: List[str], main_categories: List[str]) -> str:
@@ -788,27 +816,78 @@ def prepare_dataframe_for_store(df: pd.DataFrame) -> list:
     return df_dict
 
 
-def save_tagged_file(df: pd.DataFrame, filename: str) -> bool:
-    """Save the tagged DataFrame to processed directory"""
+def save_expenses(df: pd.DataFrame, month: Optional[str] = None) -> bool:
+    """Save expenses to the unified CSV file
+    
+    Args:
+        df: DataFrame with new/updated expenses
+        month: If provided, will merge only this month's data with existing data.
+               If None, will replace all data with df.
+    
+    Returns:
+        True if successful, False otherwise
+    """
     try:
-        from .paths import get_processed_file
-        
         # Prepare DataFrame for saving
         save_df = df.copy()
         
         # Convert tags list to string representation for CSV
-        save_df['tags'] = save_df['tags'].apply(lambda tags: str(tags) if tags else '[]')
+        if 'tags' in save_df.columns:
+            save_df['tags'] = save_df['tags'].apply(lambda tags: str(tags) if tags else '[]')
         
         # Remove temporary columns
-        cols_to_remove = ['amount_numeric', 'amount_abs']
+        cols_to_remove = ['amount_numeric', 'amount_abs', 'parsed_tags']
         save_df = save_df.drop(columns=[col for col in cols_to_remove if col in save_df.columns])
         
-        # Save to processed directory
-        processed_file_path = get_processed_file(filename)
-        save_df.to_csv(processed_file_path, index=False)
+        # Ensure month column exists
+        if 'month' not in save_df.columns:
+            if month:
+                save_df['month'] = month
+            else:
+                # Extract month from Date column as fallback
+                save_df['month'] = pd.to_datetime(save_df['Date'], format='mixed').dt.strftime('%Y-%m')
+        
+        # If month is specified, merge with existing data
+        if month:
+            expenses_file = get_expenses_file()
+            if expenses_file.exists():
+                # Load existing data
+                existing_df = pd.read_csv(expenses_file)
+                
+                # Remove old data for this month
+                existing_df = existing_df[existing_df['month'] != month]
+                
+                # Combine with new data
+                save_df = pd.concat([existing_df, save_df], ignore_index=True)
+                
+                # Sort by date
+                save_df['Date'] = pd.to_datetime(save_df['Date'], format='mixed')
+                save_df = save_df.sort_values('Date')
+        
+        # Save to unified file
+        expenses_file = get_expenses_file()
+        save_df.to_csv(expenses_file, index=False)
         
         return True
         
     except Exception as e:
-        print(f"Error saving tagged file: {e}")
-        return False 
+        print(f"Error saving expenses: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+# Keep old function name for backward compatibility
+def save_tagged_file(df: pd.DataFrame, filename: str) -> bool:
+    """Save tagged file (backward compatibility wrapper)
+    
+    Args:
+        df: DataFrame with tagged expenses
+        filename: Original filename (e.g., '2025-12.csv'), used to extract month
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    # Extract month from filename
+    month = filename.replace('.csv', '')
+    return save_expenses(df, month=month) 
