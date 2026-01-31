@@ -108,6 +108,20 @@ def create_main_layout():
 def create_categories_layout():
     """Layout for the categories analysis tab"""
     return dbc.Container([
+        # Month selector
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.Label("Select Month:", className="form-label fw-bold"),
+                    dcc.Dropdown(
+                        id='month-selector',
+                        placeholder="Select a month...",
+                        className="mb-3"
+                    )
+                ])
+            ], width=4)
+        ]),
+        
         html.P("Click on a pie chart slice to see details", className="text-center text-muted mb-4"),
         
         dbc.Row([
