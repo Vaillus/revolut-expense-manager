@@ -17,7 +17,8 @@ from ..utilities.data_loader import (
     get_tagging_progress, save_tagged_file, update_configurations_on_disk,
     restore_dataframe_from_store, prepare_dataframe_for_store,
     remove_transactions_from_raw, get_remaining_raw_count,
-    mark_month_as_completed, save_expenses
+    mark_month_as_completed, save_expenses,
+    spread_transaction_over_months
 )
 
 
@@ -903,6 +904,102 @@ def register_tagging_callbacks(app):
         
         return dbc.Alert(message_parts, color="success", dismissable=True), new_refresh, raw_files_display
 
+    # Callbacks for spread functionality
+    
+    @app.callback(
+        Output('spread-options-div', 'style'),
+        [Input('spread-months-checkbox', 'value')]
+    )
+    def toggle_spread_options(is_checked):
+        """Show/hide spread options based on checkbox"""
+        if is_checked:
+            return {'display': 'block'}
+        return {'display': 'none'}
+
+    @app.callback(
+        [Output('spread-start-month', 'options'),
+         Output('spread-start-month', 'value', allow_duplicate=True),
+         Output('spread-end-month', 'options')],
+        [Input('edit-transaction-modal', 'is_open')],
+        [State('dataframe-store', 'data'),
+         State('selected-transaction-store', 'data')],
+        prevent_initial_call=True
+    )
+    def populate_month_selectors(is_open, df_data, selected_transactions):
+        """Populate month dropdowns with transaction's month as default"""
+        if not is_open or not selected_transactions or not df_data:
+            return [], None, []
+        
+        try:
+            from datetime import datetime
+            from dateutil.relativedelta import relativedelta
+            
+            # Get transaction date
+            df = restore_dataframe_from_store(df_data)
+            trans_id = selected_transactions[0]
+            df_index = int(trans_id.split('_')[1])
+            trans_date = pd.to_datetime(df.loc[df_index, 'Date'])
+            trans_month = trans_date.strftime('%Y-%m')
+            
+            # Generate month options (6 months before to 12 months after)
+            months = []
+            current = trans_date - relativedelta(months=6)
+            for i in range(24):  # 6 before + current + 12 after
+                month_str = current.strftime('%Y-%m')
+                months.append({'label': month_str, 'value': month_str})
+                current += relativedelta(months=1)
+            
+            return months, trans_month, months
+        except Exception as e:
+            print(f"Error populating month selectors: {e}")
+            return [], None, []
+
+    @app.callback(
+        Output('spread-preview', 'children'),
+        [Input('spread-start-month', 'value'),
+         Input('spread-end-month', 'value'),
+         Input('edit-amount-input', 'value')]
+    )
+    def update_spread_preview(start_month, end_month, amount):
+        """Show preview: 'N months × X€ = Y€'"""
+        if not start_month or not end_month:
+            return "Sélectionnez les mois de début et de fin"
+        
+        if not amount or amount <= 0:
+            return "Entrez un montant valide"
+        
+        try:
+            from datetime import datetime
+            from dateutil.relativedelta import relativedelta
+            
+            start = datetime.strptime(start_month, '%Y-%m')
+            end = datetime.strptime(end_month, '%Y-%m')
+            
+            if end < start:
+                return html.Span(
+                    "⚠️ Le mois de fin doit être après ou égal au mois de début",
+                    className="text-danger"
+                )
+            
+            # Calculate months
+            months = []
+            current = start
+            while current <= end:
+                months.append(current.strftime('%Y-%m'))
+                current += relativedelta(months=1)
+            
+            num_months = len(months)
+            monthly_amount = amount / num_months
+            
+            return [
+                html.P([
+                    html.Strong(f"{num_months} mois"),
+                    f" × {monthly_amount:.2f}€ = {amount:.2f}€"
+                ], className="mb-0")
+            ]
+        except Exception as e:
+            return html.Span(f"Erreur: {str(e)}", className="text-danger")
+
     # Nouveaux callbacks pour l'édition et suppression des transactions
     
     @app.callback(
@@ -944,7 +1041,10 @@ def register_tagging_callbacks(app):
         [Output('edit-transaction-modal', 'is_open'),
          Output('edit-amount-input', 'value'),
          Output('edit-amount-feedback', 'children'),
-         Output('selected-transaction-store', 'data', allow_duplicate=True)],
+         Output('selected-transaction-store', 'data', allow_duplicate=True),
+         Output('spread-months-checkbox', 'value'),
+         Output('spread-start-month', 'value'),
+         Output('spread-end-month', 'value')],
         [Input({'type': 'edit-transaction-btn', 'index': ALL}, 'n_clicks'),
          Input('cancel-edit-btn', 'n_clicks'),
          Input('confirm-edit-btn', 'n_clicks')],
@@ -972,21 +1072,26 @@ def register_tagging_callbacks(app):
             df_index = int(single_transaction_id.split('_')[1])
             df = restore_dataframe_from_store(df_data)
             current_amount = abs(df.loc[df_index, 'Amount'])
-            # Garder la transaction sélectionnée
-            return True, current_amount, "", selected_transactions
+            
+            # Get transaction date for default month
+            trans_date = pd.to_datetime(df.loc[df_index, 'Date'])
+            trans_month = trans_date.strftime('%Y-%m')
+            
+            # Garder la transaction sélectionnée, reset spread fields
+            return True, current_amount, "", selected_transactions, False, trans_month, trans_month
         
         # Fermer le modal (annuler)
         elif 'cancel-edit-btn' in triggered_id:
-            # Garder la transaction sélectionnée
-            return False, None, "", selected_transactions
+            # Garder la transaction sélectionnée, reset spread fields
+            return False, None, "", selected_transactions, False, None, None
         
         # Confirmer l'édition
         elif 'confirm-edit-btn' in triggered_id:
             if not new_amount or new_amount <= 0:
-                return True, new_amount, dbc.Alert("Le montant doit être positif", color="danger", dismissable=True), selected_transactions
+                return True, new_amount, dbc.Alert("Le montant doit être positif", color="danger", dismissable=True), selected_transactions, False, None, None
             # Le modal se fermera et l'édition sera traitée par un autre callback
-            # Garder la transaction sélectionnée
-            return False, None, "", selected_transactions
+            # Garder la transaction sélectionnée, reset spread fields
+            return False, None, "", selected_transactions, False, None, None
         
         raise PreventUpdate
 
@@ -999,35 +1104,79 @@ def register_tagging_callbacks(app):
         [State('dataframe-store', 'data'),
          State('selected-transaction-store', 'data'),
          State('edit-amount-input', 'value'),
-         State('selected-vendors-store', 'data')],
+         State('selected-vendors-store', 'data'),
+         State('spread-months-checkbox', 'value'),
+         State('spread-start-month', 'value'),
+         State('spread-end-month', 'value')],
         prevent_initial_call=True
     )
-    def confirm_edit_transaction(n_clicks, df_data, selected_transactions, new_amount, selected_vendors):
-        """Confirm transaction amount edit"""
+    def confirm_edit_transaction(n_clicks, df_data, selected_transactions, new_amount, selected_vendors,
+                                spread_enabled, start_month, end_month):
+        """Confirm transaction edit (with optional spreading)"""
         # Ensure only one transaction is selected for editing
         if not n_clicks or not df_data or not selected_transactions or len(selected_transactions) != 1 or not new_amount:
             raise PreventUpdate
         
         if new_amount <= 0:
             raise PreventUpdate
-            
-        # Modifier le montant dans le DataFrame
+        
         single_transaction_id = selected_transactions[0]
         df_index = int(single_transaction_id.split('_')[1])
         df = restore_dataframe_from_store(df_data)
         
-        # Conserver le signe original (positif ou négatif)
-        original_amount = df.loc[df_index, 'Amount']
-        sign = 1 if original_amount >= 0 else -1
-        df.at[df_index, 'Amount'] = sign * new_amount
-        # Mettre à jour amount_abs pour l'affichage
-        df.at[df_index, 'amount_abs'] = new_amount
-        
-        feedback = dbc.Alert(
-            f"✏️ Montant modifié avec succès: {new_amount}€",
-            color="success",
-            dismissable=True
-        )
+        if spread_enabled and start_month and end_month:
+            # SPREAD MODE: Create multiple transactions
+            try:
+                original_trans = df.loc[df_index].copy()
+                # Restore sign for expenses (should be negative)
+                original_amount = original_trans['Amount']
+                sign = 1 if original_amount >= 0 else -1
+                original_trans['Amount'] = sign * new_amount
+                
+                # Spread it
+                new_transactions_df = spread_transaction_over_months(original_trans, start_month, end_month)
+                
+                # Remove original transaction from buffer
+                df = df.drop(df_index).reset_index(drop=True)
+                
+                # Add new transactions to buffer
+                df = pd.concat([df, new_transactions_df], ignore_index=True)
+                
+                # Recalculate derived columns
+                df['amount_numeric'] = pd.to_numeric(df['Amount'], errors='coerce')
+                df['amount_abs'] = df['amount_numeric'].abs()
+                
+                # Sort by date
+                df['Date'] = pd.to_datetime(df['Date'])
+                df = df.sort_values('Date').reset_index(drop=True)
+                
+                num_months = len(new_transactions_df)
+                monthly_amount = new_amount / num_months
+                
+                feedback = dbc.Alert(
+                    f"✅ Dépense étalée sur {num_months} mois ({monthly_amount:.2f}€ par mois)",
+                    color="success",
+                    dismissable=True
+                )
+            except Exception as e:
+                feedback = dbc.Alert(
+                    f"❌ Erreur lors de l'étalement: {str(e)}",
+                    color="danger",
+                    dismissable=True
+                )
+                return prepare_dataframe_for_store(df), feedback, selected_transactions, selected_vendors
+        else:
+            # SIMPLE EDIT MODE: Just change amount
+            original_amount = df.loc[df_index, 'Amount']
+            sign = 1 if original_amount >= 0 else -1
+            df.at[df_index, 'Amount'] = sign * new_amount
+            df.at[df_index, 'amount_abs'] = new_amount
+            
+            feedback = dbc.Alert(
+                f"✏️ Montant modifié avec succès: {new_amount}€",
+                color="success",
+                dismissable=True
+            )
         
         # Garder les vendeurs sélectionnés mais réinitialiser la transaction sélectionnée
         # pour forcer le rafraîchissement de l'affichage

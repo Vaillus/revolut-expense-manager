@@ -6,6 +6,8 @@ import json
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 from pathlib import Path
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 from .paths import get_config_file, get_processed_file, get_expenses_file
 
@@ -504,14 +506,17 @@ def remove_transactions_from_raw(filename: str, transactions_to_remove: pd.DataF
         transactions_to_remove['Amount'] = pd.to_numeric(transactions_to_remove['Amount'], errors='coerce')
         
         # Create matching mask
-        # Match on Date (same day), Amount, and Description
+        # Match on Date (same day), Amount, and Description (or original_description for spread transactions)
         mask = pd.Series([False] * len(raw_df))
         
         for _, trans in transactions_to_remove.iterrows():
+            # Use original_description if present (for spread transactions), otherwise use Description
+            desc_to_match = trans.get('original_description', trans.get('Description', ''))
+            
             # Match transactions with same Date (day), Amount, and Description
             date_match = raw_df['Date'].dt.date == trans['Date'].date() if pd.notna(trans['Date']) else False
             amount_match = raw_df['Amount'] == trans['Amount']
-            desc_match = raw_df['Description'] == trans['Description']
+            desc_match = raw_df['Description'] == desc_to_match
             
             # Combine matches
             combined_match = date_match & amount_match & desc_match
@@ -565,6 +570,124 @@ def get_remaining_raw_count(filename: str) -> int:
     except Exception as e:
         print(f"Error counting remaining transactions: {e}")
         return 0
+
+
+def spread_transaction_over_months(transaction: pd.Series, start_month: str, end_month: str) -> pd.DataFrame:
+    """
+    Spread a single transaction over multiple months
+    
+    Creates N new transactions (one per month) with:
+    - Amount divided by N
+    - Different month attribution
+    - Updated date (first of month except original month)
+    - Description with indicator (1/N, 2/N, etc.)
+    - Original description preserved for RAW matching
+    - All metadata (tags, State, Type, Currency) preserved
+    
+    Args:
+        transaction: pd.Series with the transaction to spread
+        start_month: Start month in 'YYYY-MM' format
+        end_month: End month in 'YYYY-MM' format
+    
+    Returns:
+        pd.DataFrame with N transactions
+    """
+    # Validate inputs
+    if not start_month or not end_month:
+        raise ValueError("Start and end months are required")
+    
+    start = datetime.strptime(start_month, '%Y-%m')
+    end = datetime.strptime(end_month, '%Y-%m')
+    
+    if end < start:
+        raise ValueError("End month must be after or equal to start month")
+    
+    # Calculate number of months
+    months = []
+    current = start
+    while current <= end:
+        months.append(current.strftime('%Y-%m'))
+        current += relativedelta(months=1)
+    
+    num_months = len(months)
+    
+    # Get original transaction date and month
+    trans_date = pd.to_datetime(transaction['Date'])
+    trans_month = trans_date.strftime('%Y-%m')
+    original_description = str(transaction.get('Description', ''))
+    
+    # Amount per month (preserve sign)
+    monthly_amount = transaction['Amount'] / num_months
+    monthly_amount_abs = abs(monthly_amount)
+    
+    # Create transactions
+    new_transactions = []
+    for i, month in enumerate(months):
+        # Create a copy of the transaction
+        new_trans = transaction.copy()
+        
+        # Update amount
+        new_trans['Amount'] = monthly_amount
+        new_trans['amount_abs'] = monthly_amount_abs
+        
+        # Set month
+        new_trans['month'] = month
+        
+        # Update date
+        if month == trans_month:
+            # Keep original date for the original month
+            new_trans['Date'] = transaction['Date']
+        else:
+            # Set to first day of the month
+            new_trans['Date'] = f"{month}-01"
+        
+        # Preserve original description for RAW matching
+        new_trans['original_description'] = original_description
+        
+        # Update description with indicator
+        if num_months > 1:
+            new_trans['Description'] = f"{original_description} ({i+1}/{num_months})"
+        else:
+            new_trans['Description'] = original_description
+        
+        # Preserve all other fields
+        # Tags: ensure it's a list
+        if 'tags' in transaction.index:
+            tags_value = transaction['tags']
+            if isinstance(tags_value, list):
+                new_trans['tags'] = tags_value.copy()
+            elif pd.notna(tags_value) and tags_value:
+                # Try to parse if it's a string representation
+                try:
+                    if isinstance(tags_value, str):
+                        new_trans['tags'] = eval(tags_value) if tags_value.startswith('[') else []
+                    else:
+                        new_trans['tags'] = []
+                except:
+                    new_trans['tags'] = []
+            else:
+                new_trans['tags'] = []
+        else:
+            new_trans['tags'] = []
+        
+        # Preserve other metadata fields
+        for field in ['State', 'Type', 'Currency']:
+            if field in transaction.index:
+                new_trans[field] = transaction[field]
+        
+        # Recalculate amount_numeric if needed
+        if 'amount_numeric' in new_trans.index:
+            new_trans['amount_numeric'] = monthly_amount
+        
+        new_transactions.append(new_trans)
+    
+    # Convert to DataFrame
+    result_df = pd.DataFrame(new_transactions)
+    
+    # Ensure Date is datetime
+    result_df['Date'] = pd.to_datetime(result_df['Date'])
+    
+    return result_df
 
 
 def analyze_untagged_vendors(df: pd.DataFrame, vendor_tags: dict) -> dict:

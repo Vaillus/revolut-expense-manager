@@ -293,9 +293,9 @@ def create_interactive_tagging_layout():
         
         # Modal pour l'édition du montant
         dbc.Modal([
-            dbc.ModalHeader(dbc.ModalTitle("✏️ Modifier le montant de la transaction")),
+            dbc.ModalHeader(dbc.ModalTitle("✏️ Modifier la transaction")),
             dbc.ModalBody([
-                html.P("Entrez le nouveau montant pour cette transaction:", className="mb-3"),
+                html.Label("Montant:", className="fw-bold"),
                 dbc.Input(
                     id="edit-amount-input",
                     type="number",
@@ -303,6 +303,44 @@ def create_interactive_tagging_layout():
                     placeholder="Montant...",
                     className="mb-3"
                 ),
+                
+                html.Hr(),
+                
+                # Spread option
+                dbc.Checkbox(
+                    id="spread-months-checkbox",
+                    label="📅 Étaler cette dépense sur plusieurs mois",
+                    value=False,
+                    className="mb-3"
+                ),
+                
+                # Spread options (hidden by default)
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.Label("Mois de début:", className="form-label"),
+                            dcc.Dropdown(
+                                id='spread-start-month',
+                                placeholder="Sélectionner...",
+                                className="mb-2"
+                            )
+                        ], width=6),
+                        dbc.Col([
+                            html.Label("Mois de fin:", className="form-label"),
+                            dcc.Dropdown(
+                                id='spread-end-month',
+                                placeholder="Sélectionner...",
+                                className="mb-2"
+                            )
+                        ], width=6),
+                    ]),
+                    dbc.Alert(
+                        id='spread-preview',
+                        color="info",
+                        className="mt-2"
+                    )
+                ], id='spread-options-div', style={'display': 'none'}),
+                
                 html.Div(id="edit-amount-feedback")
             ]),
             dbc.ModalFooter([
